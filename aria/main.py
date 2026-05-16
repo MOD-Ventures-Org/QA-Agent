@@ -29,7 +29,7 @@ app.include_router(webhook_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "1.1.0", "agent": "ARIA"}
 
 
 if __name__ == "__main__":
