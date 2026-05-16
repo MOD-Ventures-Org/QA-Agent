@@ -21,3 +21,6 @@ QA-Agent/
 ```
 
 See [aria/README.md](aria/README.md) for the full setup and run guide.
+
+## Status
+🟢 ARIA is active — webhook test triggered on 2026-05-16
