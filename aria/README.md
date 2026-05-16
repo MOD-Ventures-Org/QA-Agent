@@ -124,3 +124,4 @@ aria/
 ├── integrations/           # Discord + ClickUp
 └── utils/                  # Logging
 ```
+all code help taken from claude vs code extension
