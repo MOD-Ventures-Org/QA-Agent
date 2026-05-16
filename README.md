@@ -21,4 +21,3 @@ QA-Agent/
 ```
 
 See [aria/README.md](aria/README.md) for the full setup and run guide.
-
