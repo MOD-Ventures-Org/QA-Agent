@@ -1,4 +1,4 @@
-# ARIA — Autonomous Regression & Intelligence Agent
+# ARIA — Autonomous Regression & Intelligence Agent  hj
 
 ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It uses Claude to analyze changes, generate tests, execute them with Playwright, and report results to Discord and ClickUp.
 
