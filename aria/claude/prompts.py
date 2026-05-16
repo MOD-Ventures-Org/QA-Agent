@@ -93,3 +93,42 @@ Write a plain-English bug summary covering:
 4. Suggested fix direction
 
 Keep it under 400 words."""
+
+
+EVALUATOR_SYSTEM = """You are a senior QA director performing a post-run product quality evaluation.
+Assess overall product health and release readiness based on test results, failure patterns, and change context.
+Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
+
+
+def evaluator_user_prompt(event, test_plan, test_result) -> str:
+    pass_rate = (test_result.passed / max(test_result.total, 1)) * 100
+    failure_text = "\n".join(
+        f"  - {f['name']}: {f['error'][:120]}"
+        for f in (test_result.failure_details or [])[:8]
+    ) or "  (none)"
+
+    return f"""Event: {event.event_type} on {event.repo_name} [{event.branch}] by {event.author}
+PR title: {event.pr_title or 'N/A'}
+Priority: {test_plan.priority}
+Focus areas: {', '.join(test_plan.focus_areas) or 'N/A'}
+Regression detected: {test_result.regression_detected}
+
+Test Results:
+  Total: {test_result.total}
+  Passed: {test_result.passed} ({pass_rate:.1f}%)
+  Failed: {test_result.failed}
+  Errors: {test_result.errors}
+  Duration: {test_result.duration:.1f}s
+
+Failing tests:
+{failure_text}
+
+Return exactly this JSON shape:
+{{
+  "quality_score": <integer 0-100>,
+  "grade": "A" | "B" | "C" | "D" | "F",
+  "summary": "<2-3 sentence overall product health assessment>",
+  "strengths": ["<what is working well>", ...],
+  "risks": ["<key risk or concern>", ...],
+  "recommendation": "ship" | "ship with caution" | "block"
+}}"""

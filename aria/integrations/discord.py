@@ -17,6 +17,9 @@ COLOR_AMBER = 0x854F0B
 
 PRIORITY_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
 
+GRADE_COLOR = {"A": 0x1B6B2F, "B": 0x4A7C2F, "C": 0xB8860B, "D": 0xB85C00, "F": 0xA32D2D}
+RECOMMENDATION_EMOJI = {"ship": "✅", "ship with caution": "⚠️", "block": "🚫"}
+
 
 def _build_embed(
     run_id: str,
@@ -71,19 +74,43 @@ def _build_embed(
     }
 
 
+def _build_evaluation_embed(evaluation) -> dict:
+    color = GRADE_COLOR.get(evaluation.grade, COLOR_AMBER)
+    rec_emoji = RECOMMENDATION_EMOJI.get(evaluation.recommendation, "❓")
+
+    strengths = "\n".join(f"• {s}" for s in evaluation.strengths[:4]) or "N/A"
+    risks = "\n".join(f"• {r}" for r in evaluation.risks[:4]) or "N/A"
+
+    return {
+        "title": "📊 Product Evaluation",
+        "color": color,
+        "fields": [
+            {"name": "Grade", "value": f"**{evaluation.grade}** — {evaluation.quality_score}/100", "inline": True},
+            {"name": "Recommendation", "value": f"{rec_emoji} {evaluation.recommendation.title()}", "inline": True},
+            {"name": "Summary", "value": evaluation.summary[:300] or "N/A", "inline": False},
+            {"name": "✅ Strengths", "value": strengths, "inline": True},
+            {"name": "⚠️ Risks", "value": risks, "inline": True},
+        ],
+    }
+
+
 async def post_discord_report(
     run_id: str,
     event: GitHubPushEvent,
     test_plan: TestPlan,
     result: TestResult,
     bug_summary: str,
+    evaluation=None,
 ) -> str:
     if not settings.discord_webhook_url:
         logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord post")
         return ""
 
     embed = _build_embed(run_id, event, test_plan, result, bug_summary)
-    payload = {"embeds": [embed]}
+    embeds = [embed]
+    if evaluation is not None:
+        embeds.append(_build_evaluation_embed(evaluation))
+    payload = {"embeds": embeds}
 
     for attempt in range(3):
         try:

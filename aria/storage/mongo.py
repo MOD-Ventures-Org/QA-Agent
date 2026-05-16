@@ -23,7 +23,7 @@ def _get_db():
     return _client[settings.mongodb_db_name]
 
 
-async def save_test_run(event: GitHubPushEvent, test_plan: TestPlan, result: TestResult) -> str:
+async def save_test_run(event: GitHubPushEvent, test_plan: TestPlan, result: TestResult, evaluation=None) -> str:
     run_id = str(uuid.uuid4())[:8]
     doc = TestRunDocument(
         run_id=run_id,
@@ -39,6 +39,9 @@ async def save_test_run(event: GitHubPushEvent, test_plan: TestPlan, result: Tes
         failed=result.failed,
         duration=result.duration,
         regression_detected=result.regression_detected,
+        quality_score=evaluation.quality_score if evaluation else 0,
+        grade=evaluation.grade if evaluation else "N/A",
+        recommendation=evaluation.recommendation if evaluation else "unknown",
     )
     try:
         db = _get_db()

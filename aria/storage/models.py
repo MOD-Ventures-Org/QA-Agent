@@ -19,6 +19,9 @@ class TestRunDocument:
     duration: float
     regression_detected: bool
     bug_summary: str = ""
+    quality_score: int = 0
+    grade: str = "N/A"
+    recommendation: str = "unknown"
 
     def to_dict(self) -> dict:
         return asdict(self)

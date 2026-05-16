@@ -60,6 +60,7 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
 async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import analyze_event
     from claude.test_generator import generate_tests
+    from claude.evaluator import evaluate_product
     from testing.runner import run_tests
     from testing.regression_watcher import check_regression
     from storage.mongo import save_test_run, save_bug_report
@@ -78,7 +79,10 @@ async def _run_pipeline(event: GitHubPushEvent):
     test_result = await run_tests(test_plan)
     test_result = await check_regression(event, test_result)
 
-    run_id = await save_test_run(event, test_plan, test_result)
+    evaluation = await evaluate_product(event, test_plan, test_result)
+    logger.info(f"Product evaluation grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}")
+
+    run_id = await save_test_run(event, test_plan, test_result, evaluation)
     logger.info(f"Saved test run id={run_id}")
 
     bug_summary = ""
@@ -88,7 +92,7 @@ async def _run_pipeline(event: GitHubPushEvent):
         clickup_ids = await file_bug_tickets(event, test_plan, test_result, bug_summary)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
 
-    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary)
+    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation)
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 

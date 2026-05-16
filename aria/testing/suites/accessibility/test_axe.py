@@ -4,7 +4,7 @@ import pytest
 @pytest.mark.a11y
 def test_homepage_accessibility(page, base_url):
     try:
-        from playwright_axe import Axe
+        from axe_playwright_python import Axe
         page.goto(base_url)
         axe = Axe()
         results = axe.run(page)

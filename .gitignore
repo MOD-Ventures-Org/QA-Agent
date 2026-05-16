@@ -3,12 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-.json_report/
-/tmp/
 *.egg-info/
 dist/
 build/
 .venv/
 venv/
-aria.log
-ngrok.exe
+aria/aria.log
+aria/ngrok.exe
+Prompt for the QA Agent.txt
