@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, field
 from typing import List
 
-from openai import OpenAI
+import anthropic
 
 from config import settings
 from utils.logger import get_logger
@@ -10,7 +10,7 @@ from webhook.models import GitHubPushEvent
 from claude.prompts import ANALYZER_SYSTEM, analyzer_user_prompt
 
 logger = get_logger(__name__)
-client = OpenAI(api_key=settings.openai_api_key)
+client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
 @dataclass
@@ -50,18 +50,16 @@ def _all_suites_plan(reasoning: str = "Fallback: running all suites") -> TestPla
 
 async def analyze_event(event: GitHubPushEvent) -> TestPlan:
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
             max_tokens=1024,
             temperature=0,
-            messages=[
-                {"role": "system", "content": ANALYZER_SYSTEM},
-                {"role": "user", "content": analyzer_user_prompt(event)},
-            ],
+            system=ANALYZER_SYSTEM,
+            messages=[{"role": "user", "content": analyzer_user_prompt(event)}],
         )
-        raw = response.choices[0].message.content.strip()
+        raw = message.content[0].text.strip()
         data = json.loads(raw)
         return TestPlan(**{k: v for k, v in data.items() if k in TestPlan.__dataclass_fields__})
     except Exception as e:
-        logger.error(f"OpenAI analyzer failed: {e} — falling back to all suites")
+        logger.error(f"Claude analyzer failed: {e} — falling back to all suites")
         return _all_suites_plan(f"Parse error: {e}")
