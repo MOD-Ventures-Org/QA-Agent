@@ -1,7 +1,9 @@
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Optional
 
 import anthropic
 
@@ -15,6 +17,14 @@ logger = get_logger(__name__)
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 GENERATED_DIR = Path(__file__).parent.parent / "testing" / "suites" / "generated"
+PRODUCT_CONTEXT_PATH = Path(__file__).parent.parent / "PRODUCT_CONTEXT.md"
+
+
+@dataclass
+class GeneratedTestSummary:
+    file_name: str
+    test_names: List[str] = field(default_factory=list)
+    triggered_by: List[str] = field(default_factory=list)
 
 
 def _sanitize_name(name: str) -> str:
@@ -34,9 +44,26 @@ def _read_file_contents(changed_files: list) -> dict:
     return contents
 
 
-async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan):
+def _load_product_context() -> str:
+    if PRODUCT_CONTEXT_PATH.exists():
+        try:
+            return PRODUCT_CONTEXT_PATH.read_text(encoding="utf-8")[:4000]
+        except Exception:
+            pass
+    return ""
+
+
+def _extract_test_names(code: str) -> List[str]:
+    return re.findall(r"^def (test_\w+)", code, re.MULTILINE)
+
+
+async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan) -> Optional[GeneratedTestSummary]:
     logger.info(f"Generating tests for {len(event.changed_files)} changed file(s)")
     file_contents = _read_file_contents(event.changed_files)
+    product_context = _load_product_context()
+
+    if product_context:
+        logger.info("Product context loaded from PRODUCT_CONTEXT.md")
 
     try:
         message = client.messages.create(
@@ -47,7 +74,7 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan):
             messages=[
                 {
                     "role": "user",
-                    "content": test_generator_user_prompt(event.changed_files, file_contents),
+                    "content": test_generator_user_prompt(event.changed_files, file_contents, product_context),
                 }
             ],
         )
@@ -64,5 +91,13 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan):
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
         filename.write_text(code, encoding="utf-8")
         logger.info(f"Generated test file: {filename}")
+
+        test_names = _extract_test_names(code)
+        return GeneratedTestSummary(
+            file_name=filename.name,
+            test_names=test_names,
+            triggered_by=event.changed_files[:5],
+        )
     except Exception as e:
         logger.error(f"Test generation failed: {e}")
+        return None

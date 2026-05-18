@@ -94,6 +94,21 @@ def _build_evaluation_embed(evaluation) -> dict:
     }
 
 
+def _build_generated_tests_embed(summary) -> dict:
+    test_list = "\n".join(f"• `{name}`" for name in summary.test_names[:15]) or "No test functions found"
+    triggered = "\n".join(f"• `{f}`" for f in summary.triggered_by) or "N/A"
+    return {
+        "title": "🧪 Generated Test Cases",
+        "color": 0x5865F2,
+        "fields": [
+            {"name": "File", "value": f"`{summary.file_name}`", "inline": True},
+            {"name": "Tests Generated", "value": str(len(summary.test_names)), "inline": True},
+            {"name": "Triggered By", "value": triggered, "inline": False},
+            {"name": "Test Cases", "value": test_list, "inline": False},
+        ],
+    }
+
+
 async def post_discord_report(
     run_id: str,
     event: GitHubPushEvent,
@@ -101,6 +116,7 @@ async def post_discord_report(
     result: TestResult,
     bug_summary: str,
     evaluation=None,
+    generated_tests=None,
 ) -> str:
     if not settings.discord_webhook_url:
         logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord post")
@@ -108,6 +124,8 @@ async def post_discord_report(
 
     embed = _build_embed(run_id, event, test_plan, result, bug_summary)
     embeds = [embed]
+    if generated_tests is not None:
+        embeds.append(_build_generated_tests_embed(generated_tests))
     if evaluation is not None:
         embeds.append(_build_evaluation_embed(evaluation))
     payload = {"embeds": embeds}

@@ -83,8 +83,9 @@ async def _run_pipeline(event: GitHubPushEvent):
     test_plan = await analyze_event(event)
     logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
 
+    generated_tests = None
     if test_plan.run_generated_tests:
-        await generate_tests(event, test_plan)
+        generated_tests = await generate_tests(event, test_plan)
 
     test_result = await run_tests(test_plan)
     test_result = await check_regression(event, test_result)
@@ -106,7 +107,7 @@ async def _run_pipeline(event: GitHubPushEvent):
         clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
 
-    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation)
+    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests)
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 

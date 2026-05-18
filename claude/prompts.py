@@ -58,18 +58,20 @@ for the changed feature described. The file must:
 Output only valid Python code — no markdown fences, no explanation."""
 
 
-def test_generator_user_prompt(changed_files: list, file_contents: dict) -> str:
+def test_generator_user_prompt(changed_files: list, file_contents: dict, product_context: str = "") -> str:
     files_section = "\n\n".join(
         f"### {path}\n```\n{content}\n```"
         for path, content in file_contents.items()
     )
+    context_section = f"\n\n## Product Context\n{product_context}" if product_context else ""
     return f"""Changed/new files that need test coverage:
 {chr(10).join(f'  - {f}' for f in changed_files)}
 
 File contents:
-{files_section or '(contents not available — use diff context)'}
+{files_section or '(contents not available — use diff context)'}{context_section}
 
-Generate a complete pytest+Playwright test file covering the above changes."""
+Generate a complete pytest+Playwright test file covering the above changes.
+Name each test function clearly so it describes what user behaviour it verifies."""
 
 
 REPORT_WRITER_SYSTEM = """You are a senior QA engineer writing a plain-English bug report for developers.
