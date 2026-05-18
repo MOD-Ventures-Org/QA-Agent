@@ -35,7 +35,7 @@ async def validate_github_signature(request: Request) -> bytes:
     ).hexdigest()
 
     if not hmac.compare_digest(expected, signature):
-        logger.error(f"Rejected: signature mismatch — check GITHUB_WEBHOOK_SECRET in .env matches GitHub webhook settings")
+        logger.error(f"Rejected: signature mismatch — check WEBHOOK_SECRET in .env matches GitHub webhook settings")
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     if event not in SUPPORTED_EVENTS:

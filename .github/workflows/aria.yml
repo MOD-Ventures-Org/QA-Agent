@@ -41,7 +41,7 @@ jobs:
           BASE_URL_FRONTEND: ${{ secrets.BASE_URL_FRONTEND }}
           BASE_URL_API: ${{ secrets.BASE_URL_API }}
           PLAYWRIGHT_HEADLESS: "True"
-          GITHUB_WEBHOOK_SECRET: ${{ secrets.GITHUB_WEBHOOK_SECRET }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
           python -m pytest testing/suites/ \
             --json-report \

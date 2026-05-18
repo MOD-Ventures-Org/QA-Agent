@@ -4,7 +4,7 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
-    github_webhook_secret: str = Field(..., env="GITHUB_WEBHOOK_SECRET")
+    github_webhook_secret: str = Field(..., env="WEBHOOK_SECRET")
     discord_webhook_url: str = Field(..., env="DISCORD_WEBHOOK_URL")
     ngrok_authtoken: str = Field("", env="NGROK_AUTHTOKEN")
     clickup_api_token: str = Field("", env="CLICKUP_API_TOKEN")
