@@ -1,0 +1,100 @@
+name: ARIA QA Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  aria-qa:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run test suites
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          MONGODB_URI: mongodb://localhost:27017
+          MONGODB_DB_NAME: aria
+          BASE_URL_FRONTEND: ${{ secrets.BASE_URL_FRONTEND }}
+          BASE_URL_API: ${{ secrets.BASE_URL_API }}
+          PLAYWRIGHT_HEADLESS: "True"
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.GITHUB_WEBHOOK_SECRET }}
+        run: |
+          python -m pytest testing/suites/ \
+            --json-report \
+            --json-report-file=report.json \
+            -v \
+            --timeout=300 \
+            || true
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aria-report
+          path: report.json
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aria-screenshots
+          path: /tmp/aria_screenshots/
+          if-no-files-found: ignore
+
+      - name: Post results to Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'EOF'
+          import json, os, httpx
+          webhook = os.environ.get("DISCORD_WEBHOOK_URL", "")
+          if not webhook:
+              print("No Discord webhook — skipping")
+              exit(0)
+          try:
+              with open("report.json") as f:
+                  data = json.load(f)
+              summary = data.get("summary", {})
+              passed = summary.get("passed", 0)
+              failed = summary.get("failed", 0)
+              total = summary.get("total", 0)
+              color = 0x27500A if failed == 0 else 0xA32D2D
+              embed = {
+                  "title": f"ARIA CI Report — {os.environ.get('GITHUB_REPOSITORY', 'repo')}",
+                  "color": color,
+                  "fields": [
+                      {"name": "Passed", "value": str(passed), "inline": True},
+                      {"name": "Failed", "value": str(failed), "inline": True},
+                      {"name": "Total", "value": str(total), "inline": True},
+                  ],
+                  "footer": {"text": "ARIA powered by Claude + Playwright"},
+              }
+              httpx.post(webhook, json={"embeds": [embed]})
+          except Exception as e:
+              print(f"Discord post failed: {e}")
+          EOF

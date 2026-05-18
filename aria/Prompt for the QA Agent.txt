@@ -1,0 +1,285 @@
+Build a complete autonomous QA agent called ARIA (Autonomous Regression & Intelligence Agent).
+Use FastAPI, Playwright for Python, Anthropic Claude API, MongoDB, ClickUp REST API, Discord webhooks,
+GitHub Actions, and Ngrok. The system must run fully locally via `python main.py` for development,
+and also work headlessly in GitHub Actions CI.
+
+=== SYSTEM OVERVIEW ===
+
+ARIA does the following on every GitHub push or PR event:
+1. Receives the webhook via FastAPI (exposed via ngrok locally, or direct URL in CI)
+2. Claude API reads the changed file list, diffs, commit messages, and repo context
+3. Claude generates NEW pytest+Playwright test files for any changed feature (test case generator)
+4. Claude decides which existing test suites to run (regression watcher)
+5. Playwright executes all selected tests — UI, API functional, end-to-end
+6. axe-core accessibility checks run on all touched pages
+7. Results + failure screenshots are stored in MongoDB (test history)
+8. Claude reads the failure logs and screenshots and writes a plain-English bug summary
+9. Discord receives a rich embed with the full report
+10. ClickUp receives a new task for every failing test (auto-filed bug ticket)
+11. GitHub Actions YAML runs the full pipeline headlessly on every push
+
+=== TECH STACK ===
+- Python 3.11+
+- FastAPI + Uvicorn
+- Anthropic Python SDK (model: claude-sonnet-4-20250514, temperature=0)
+- Playwright for Python + pytest-playwright
+- playwright-axe (inject axe-core for accessibility)
+- pytest + pytest-json-report
+- Motor (async MongoDB driver)
+- httpx (ClickUp + Discord HTTP calls)
+- python-dotenv
+- pyngrok
+- PyYAML (GitHub Actions file generation)
+
+=== FILE STRUCTURE ===
+
+Create exactly this directory layout:
+
+aria/
+├── main.py                          # FastAPI app + ngrok startup
+├── config.py                        # pydantic settings from .env
+├── requirements.txt                 # all pinned deps
+├── .env                             # secrets — gitignored
+├── .env.example                     # committed placeholder
+├── README.md                        # full how-to-run guide
+├── .github/
+│   └── workflows/
+│       └── aria.yml                 # GitHub Actions CI pipeline
+│
+├── webhook/
+│   ├── __init__.py
+│   ├── router.py                    # POST /webhook/github
+│   ├── validator.py                 # HMAC-SHA256 signature check
+│   └── models.py                    # Pydantic payload models
+│
+├── claude/
+│   ├── __init__.py
+│   ├── analyzer.py                  # reads event → returns TestPlan JSON
+│   ├── test_generator.py            # generates new pytest files for changed features
+│   ├── report_writer.py             # reads failures → plain-English bug summary
+│   └── prompts.py                   # all system + user prompt builders
+│
+├── testing/
+│   ├── __init__.py
+│   ├── runner.py                    # subprocess orchestrator for pytest
+│   ├── result_parser.py             # pytest JSON → TestResult dataclass
+│   ├── regression_watcher.py        # compares current results to MongoDB baseline
+│   └── suites/
+│       ├── conftest.py              # Playwright fixtures + screenshot-on-fail hook
+│       ├── generated/               # Claude writes new test files here
+│       │   └── .gitkeep
+│       ├── ui/
+│       │   ├── test_smoke.py
+│       │   ├── test_regression.py
+│       │   └── test_critical_paths.py
+│       ├── api/
+│       │   ├── test_endpoints.py
+│       │   ├── test_auth.py
+│       │   └── test_contracts.py
+│       ├── functional/
+│       │   ├── test_integration.py
+│       │   └── test_edge_cases.py
+│       └── accessibility/
+│           └── test_axe.py          # axe-core a11y checks via playwright-axe
+│
+├── storage/
+│   ├── __init__.py
+│   ├── mongo.py                     # Motor client + connection helper
+│   └── models.py                    # MongoDB document schemas (TestRun, TestResult, BugReport)
+│
+├── integrations/
+│   ├── __init__.py
+│   ├── discord.py                   # rich embed builder + poster with retry
+│   └── clickup.py                   # auto-file bug tickets via ClickUp REST API
+│
+└── utils/
+    ├── __init__.py
+    └── logger.py                    # structured logging
+
+=== DETAILED REQUIREMENTS ===
+
+## config.py — load all from .env:
+ANTHROPIC_API_KEY
+GITHUB_WEBHOOK_SECRET
+DISCORD_WEBHOOK_URL
+NGROK_AUTHTOKEN
+CLICKUP_API_TOKEN
+CLICKUP_LIST_ID            # the ClickUp list where bugs get filed
+MONGODB_URI                # e.g. mongodb://localhost:27017 or Atlas URI
+MONGODB_DB_NAME            # e.g. aria
+BASE_URL_FRONTEND          # staging app URL for Playwright
+BASE_URL_API               # staging API URL for httpx tests
+PLAYWRIGHT_HEADLESS        # default True
+
+## main.py
+- On startup: launch ngrok tunnel on port 8000 via pyngrok, log the public URL
+- Include /health endpoint returning {status: ok, tunnel: }
+- Remind user in terminal to paste ngrok URL into GitHub webhook settings
+- Mount all routers
+
+## webhook/router.py
+- POST /webhook/github
+- Validate HMAC signature first (reject with 401 if invalid)
+- Extract: event_type, repo_name, branch, changed_files, commit_messages, pr_title, author, diff_summary
+- Use FastAPI BackgroundTasks — return HTTP 200 immediately, run everything in background
+- Background pipeline: claude/analyzer → claude/test_generator → testing/runner → storage → integrations
+
+## webhook/validator.py
+- HMAC-SHA256 using GITHUB_WEBHOOK_SECRET
+- Support events: push, pull_request, pull_request_review, release, workflow_run
+- Return 401 with detail message on failure
+
+## claude/analyzer.py
+Call Claude API with temperature=0.
+System prompt (in prompts.py): "You are a senior QA architect. Analyze the GitHub event context and return
+a JSON test plan. Decide which suites to run based on file paths changed."
+
+User prompt includes: event_type, repo_name, branch, changed_files list, commit_messages, pr_title, diff_summary.
+
+Claude must respond ONLY with a JSON object (no markdown, no preamble):
+{
+  "reasoning": "short explanation",
+  "run_ui_smoke": bool,
+  "run_ui_regression": bool,
+  "run_ui_critical_paths": bool,
+  "run_api_endpoints": bool,
+  "run_api_auth": bool,
+  "run_api_contracts": bool,
+  "run_functional_integration": bool,
+  "run_functional_edge_cases": bool,
+  "run_accessibility": bool,
+  "run_generated_tests": bool,
+  "priority": "critical" | "high" | "medium" | "low",
+  "focus_areas": ["list of areas most at risk"],
+  "affected_pages": ["list of page URLs/routes Claude thinks are affected"]
+}
+
+Decision logic to encode in system prompt:
+- *.tsx, *.jsx, *.css, *.html, src/components/** → enable UI suites + accessibility
+- routes/**, controllers/**, api/**, *.py server files → enable API suites
+- auth/**, middleware/** → enable api_auth + ui_critical_paths always
+- docs/**, *.md → all false, priority=low
+- release event → all true, priority=critical
+- PR to main/master → all regression + critical paths, priority=high
+- New feature files detected → enable run_generated_tests=true
+
+## claude/test_generator.py
+When run_generated_tests=true, call Claude API with:
+- The list of changed/new files
+- Their content (read from disk if available, otherwise use diff)
+- Instruction to generate a NEW pytest+Playwright test file in testing/suites/generated/
+
+Claude must produce a complete, runnable test file covering the new/changed feature.
+Save it as testing/suites/generated/test_{feature_name}_{timestamp}.py
+The generated file must import from conftest.py fixtures and follow existing patterns.
+
+## claude/report_writer.py
+After tests run, call Claude API with:
+- List of failed tests (name, error message, traceback)
+- Screenshot paths of failures
+- Claude's own reasoning from the TestPlan
+
+Claude returns a plain-English summary with:
+- What broke, likely cause, affected user flows
+- Severity assessment
+- Suggested fix direction
+
+## testing/runner.py
+- Accept TestPlan dataclass
+- Use subprocess to run pytest with: --json-report --json-report-file=/tmp/aria_report.json -v
+- Run only files/suites flagged True in TestPlan
+- Add testing/suites/generated/ to pytest paths if run_generated_tests=true
+- Set 300s timeout
+- Return TestResult: total, passed, failed, errors, duration, suite_results dict, failure_details list
+
+## testing/regression_watcher.py
+- After each test run, fetch last 5 TestRun documents from MongoDB for the same repo+branch
+- Compare current pass/fail counts to baseline average
+- Flag if failure rate increased by >10% — mark run as "regression detected"
+- Include regression flag in the TestResult
+
+## testing/suites/conftest.py
+Playwright fixtures:
+- browser_type: chromium (configurable via env)
+- page: one per test, auto-closes
+- base_url: from config
+- api_client: httpx.AsyncClient pointed at BASE_URL_API
+- screenshot_on_failure: hooks pytest's request.node, calls page.screenshot() on failure
+  Save to /tmp/aria_screenshots/{timestamp}_{test_name}.png
+
+## testing/suites/accessibility/test_axe.py
+Use playwright-axe to inject axe-core into each affected_pages URL from the TestPlan.
+Assert zero critical or serious violations.
+Report all violations with their rule ID, impact, and selector.
+
+## storage/mongo.py
+Use Motor (async). Collections:
+- test_runs: {run_id, repo, branch, event_type, timestamp, priority, reasoning, suite_results,
+              total, passed, failed, duration, regression_detected, bug_summary}
+- bug_reports: {run_id, repo, branch, failed_tests, claude_summary, clickup_task_ids, discord_message_id, timestamp}
+
+On each run: insert test_run document, upsert bug_report if failures exist.
+
+## integrations/discord.py
+Post a Discord embed via httpx. Embed spec:
+- Color: 0x27500A (green) if all pass, 0xA32D2D (red) if failures, 0x854F0B (amber) if partial
+- Title: "ARIA Report — {repo} [{branch}] #{run_id_short}"
+- Fields:
+  - Event / Priority / Suites run
+  - Claude's reasoning
+  - Pass count / Fail count / Total / Duration
+  - Regression detected: yes/no
+  - If failures: first 5 failing test names
+  - Accessibility violations (if any)
+  - Claude's bug summary (truncated to 300 chars)
+- Footer: "{timestamp} · ARIA powered by Claude + Playwright"
+- Add retry (max 2 retries, 2s delay) for Discord rate limits
+- Return the Discord message ID and store in MongoDB
+
+## integrations/clickup.py
+For EVERY failing test, create a ClickUp task via REST API:
+- POST https://api.clickup.com/api/v2/list/{CLICKUP_LIST_ID}/task
+- Task name: "[ARIA] {test_name} failed on {repo}/{branch}"
+- Description: includes error message, Claude bug summary, screenshot path, run_id
+- Priority: map ARIA priority (critical→urgent, high→high, medium→normal, low→low)
+- Tags: ["aria", "automated", repo_name]
+- Return list of created task IDs
+
+## .github/workflows/aria.yml
+Generate a complete GitHub Actions workflow that:
+- Triggers on push and pull_request to all branches
+- Runs on ubuntu-latest
+- Steps:
+  1. Checkout repo
+  2. Setup Python 3.11
+  3. pip install -r requirements.txt
+  4. playwright install chromium --with-deps
+  5. Start MongoDB service (mongo:7 docker)
+  6. Run: python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
+  7. Upload report.json and /tmp/aria_screenshots/ as artifacts
+  8. Post results to Discord via a small inline Python script using env secrets
+- Use GitHub Actions secrets for: ANTHROPIC_API_KEY, DISCORD_WEBHOOK_URL, CLICKUP_API_TOKEN,
+  MONGODB_URI, BASE_URL_FRONTEND, BASE_URL_API
+
+## requirements.txt — pin all versions, include:
+fastapi, uvicorn[standard], anthropic, playwright, pytest, pytest-playwright,
+playwright-axe, pytest-json-report, motor, python-dotenv, httpx, pyngrok, pydantic,
+pydantic-settings, PyYAML
+
+## .env.example — all keys with placeholder values and one-line comment per key
+
+## README.md — full how-to-run guide (see run steps below)
+
+=== IMPLEMENTATION NOTES ===
+- FastAPI BackgroundTasks: webhook always returns 200 before tests execute
+- Claude API calls: temperature=0 for deterministic output; wrap JSON parse in try/except,
+  fall back to running all suites on parse failure
+- MongoDB: use Motor async client; wrap all DB ops in try/except, log but don't crash on DB failure
+- Generated test files: sanitize feature name for filename (lowercase, underscores, no special chars)
+- Screenshots: /tmp/aria_screenshots/ — create dir if not exists; filename = {iso_timestamp}_{test_name}.png
+- ClickUp: only create tasks if CLICKUP_API_TOKEN and CLICKUP_LIST_ID are set — skip silently if not
+- Discord: retry max 2 times with 2s sleep on 429 rate limit
+- All secrets via config.py — zero hardcoded values in any source file
+- Structured logging in every module: format = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+- pytest marks: @pytest.mark.ui, @pytest.mark.api, @pytest.mark.functional, @pytest.mark.a11y
+- Accessibility tests: mark with @pytest.mark.a11y, run only when run_accessibility=true
