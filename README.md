@@ -81,7 +81,7 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 | Variable | Description |
 |---|---|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GITHUB_WEBHOOK_SECRET` | Secret for validating GitHub webhooks |
+| `WEBHOOK_SECRET` | Secret for validating GitHub webhooks |
 | `DISCORD_WEBHOOK_URL` | Discord incoming webhook URL |
 | `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
 | `CLICKUP_API_TOKEN` | ClickUp API token |

@@ -29,7 +29,7 @@ async def validate_github_signature(request: Request) -> bytes:
         raise HTTPException(status_code=401, detail="Missing X-Hub-Signature-256 header")
 
     expected = "sha256=" + hmac.new(
-        settings.github_webhook_secret.encode(),
+        settings.webhook_secret.encode(),
         body,
         hashlib.sha256,
     ).hexdigest()
