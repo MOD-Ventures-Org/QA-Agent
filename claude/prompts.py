@@ -95,8 +95,10 @@ Write a plain-English bug summary covering:
 Keep it under 400 words."""
 
 
-EVALUATOR_SYSTEM = """You are a senior QA director performing a post-run product quality evaluation.
-Assess overall product health and release readiness based on test results, failure patterns, and change context.
+EVALUATOR_SYSTEM = """You are a product quality advisor reporting to a business owner, not a developer.
+Your job is to assess whether the product is ready to ship to real customers based on test results.
+Translate technical test outcomes into plain business language — focus on user experience and business impact.
+Never mention test names, tracebacks, or technical jargon.
 Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 
 
@@ -107,28 +109,24 @@ def evaluator_user_prompt(event, test_plan, test_result) -> str:
         for f in (test_result.failure_details or [])[:8]
     ) or "  (none)"
 
-    return f"""Event: {event.event_type} on {event.repo_name} [{event.branch}] by {event.author}
+    return f"""Release context: {event.event_type} on {event.repo_name} by {event.author}
 PR title: {event.pr_title or 'N/A'}
-Priority: {test_plan.priority}
-Focus areas: {', '.join(test_plan.focus_areas) or 'N/A'}
+Affected areas: {', '.join(test_plan.focus_areas) or 'N/A'}
 Regression detected: {test_result.regression_detected}
 
-Test Results:
-  Total: {test_result.total}
-  Passed: {test_result.passed} ({pass_rate:.1f}%)
-  Failed: {test_result.failed}
+Test outcome summary:
+  Pass rate: {pass_rate:.1f}% ({test_result.passed} passed, {test_result.failed} failed out of {test_result.total})
   Errors: {test_result.errors}
-  Duration: {test_result.duration:.1f}s
 
-Failing tests:
+Broken areas (internal reference only — translate to user impact in your response):
 {failure_text}
 
 Return exactly this JSON shape:
 {{
   "quality_score": <integer 0-100>,
   "grade": "A" | "B" | "C" | "D" | "F",
-  "summary": "<2-3 sentence overall product health assessment>",
-  "strengths": ["<what is working well>", ...],
-  "risks": ["<key risk or concern>", ...],
+  "summary": "<2-3 sentences describing product health in business terms — what users can and cannot do>",
+  "strengths": ["<user-facing feature or flow that is working well>", ...],
+  "risks": ["<user-facing risk, e.g. 'Users may not be able to reset their password'>", ...],
   "recommendation": "ship" | "ship with caution" | "block"
 }}"""

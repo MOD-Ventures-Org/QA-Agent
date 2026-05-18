@@ -57,6 +57,16 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
     )
 
 
+def _should_run_evaluation(event: GitHubPushEvent) -> bool:
+    if event.event_type == "release":
+        return True
+    if event.event_type in ("pull_request", "pull_request_review"):
+        return True
+    if event.event_type == "push" and event.branch in ("main", "master"):
+        return True
+    return False
+
+
 async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import analyze_event
     from claude.test_generator import generate_tests
@@ -79,8 +89,12 @@ async def _run_pipeline(event: GitHubPushEvent):
     test_result = await run_tests(test_plan)
     test_result = await check_regression(event, test_result)
 
-    evaluation = await evaluate_product(event, test_plan, test_result)
-    logger.info(f"Product evaluation grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}")
+    evaluation = None
+    if _should_run_evaluation(event):
+        evaluation = await evaluate_product(event, test_plan, test_result)
+        logger.info(f"Product evaluation grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}")
+    else:
+        logger.info("Product evaluation skipped — not a PR to main, merge to main, or release")
 
     run_id = await save_test_run(event, test_plan, test_result, evaluation)
     logger.info(f"Saved test run id={run_id}")
