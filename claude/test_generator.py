@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 
 from config import settings
 from utils.logger import get_logger
@@ -12,7 +12,7 @@ from claude.analyzer import TestPlan
 from claude.prompts import TEST_GENERATOR_SYSTEM, test_generator_user_prompt
 
 logger = get_logger(__name__)
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = OpenAI(api_key=settings.openai_api_key)
 
 GENERATED_DIR = Path(__file__).parent.parent / "testing" / "suites" / "generated"
 
@@ -39,19 +39,16 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan):
     file_contents = _read_file_contents(event.changed_files)
 
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=4096,
             temperature=0,
-            system=TEST_GENERATOR_SYSTEM,
             messages=[
-                {
-                    "role": "user",
-                    "content": test_generator_user_prompt(event.changed_files, file_contents),
-                }
+                {"role": "system", "content": TEST_GENERATOR_SYSTEM},
+                {"role": "user", "content": test_generator_user_prompt(event.changed_files, file_contents)},
             ],
         )
-        code = message.content[0].text.strip()
+        code = response.choices[0].message.content.strip()
         code = re.sub(r"^```python\n?", "", code)
         code = re.sub(r"\n?```$", "", code)
 

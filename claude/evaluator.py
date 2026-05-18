@@ -2,14 +2,14 @@ import json
 from dataclasses import dataclass, field
 from typing import List
 
-import anthropic
+from openai import OpenAI
 
 from config import settings
 from utils.logger import get_logger
 from claude.prompts import EVALUATOR_SYSTEM, evaluator_user_prompt
 
 logger = get_logger(__name__)
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = OpenAI(api_key=settings.openai_api_key)
 
 
 @dataclass
@@ -36,14 +36,16 @@ def _fallback_evaluation(test_result, reason: str) -> ProductEvaluation:
 
 async def evaluate_product(event, test_plan, test_result) -> ProductEvaluation:
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+        response = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=1024,
             temperature=0,
-            system=EVALUATOR_SYSTEM,
-            messages=[{"role": "user", "content": evaluator_user_prompt(event, test_plan, test_result)}],
+            messages=[
+                {"role": "system", "content": EVALUATOR_SYSTEM},
+                {"role": "user", "content": evaluator_user_prompt(event, test_plan, test_result)},
+            ],
         )
-        raw = message.content[0].text.strip()
+        raw = response.choices[0].message.content.strip()
         data = json.loads(raw)
         return ProductEvaluation(**{k: v for k, v in data.items() if k in ProductEvaluation.__dataclass_fields__})
     except Exception as e:
