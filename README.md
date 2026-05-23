@@ -11,6 +11,8 @@ ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It use
    - deployment events run all suites to validate the current deployment
 3. The AI generates new pytest+Playwright tests for changed features
 4. Playwright executes all selected tests (UI, API, functional, accessibility)
+
+> Note: This README was updated to reflect the current repo-specific test routing and deployment validation behavior.
 5. Results + screenshots are stored in MongoDB
 6. Claude writes a plain-English bug summary
 7. Discord receives a rich embed report
