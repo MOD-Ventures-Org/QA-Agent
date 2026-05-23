@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
 from utils.logger import get_logger
+from claude.analyzer import TestPlan
 from webhook.models import GitHubPushEvent
 from webhook.validator import validate_github_signature
 
