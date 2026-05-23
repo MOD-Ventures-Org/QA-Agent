@@ -551,7 +551,8 @@ class TestPipelineHappyFlow:
 class TestPipelineSadFlow:
     """Failures in one stage must not crash the whole pipeline."""
 
-    def test_pipeline_writes_bug_report_when_tests_fail(self):
+    def test_no_bug_report_or_tickets_when_tests_fail(self):
+        # Bug summaries and ClickUp tickets are disabled — failures only go to logs + Discord.
         from webhook.router import _run_pipeline
 
         with (
@@ -561,16 +562,18 @@ class TestPipelineSadFlow:
             patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_failing_test_result()),
             patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
             patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value="Auth broke") as mock_bug,
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock, return_value=["cu-001", "cu-002"]) as mock_cu,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value=""),
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_cu,
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
         ):
             asyncio.run(_run_pipeline(_make_event()))
 
-        # Failures → both bug report and ClickUp must be called
-        mock_bug.assert_called_once()
-        mock_cu.assert_called_once()
+        # Bug report and ClickUp must NOT be called
+        mock_bug.assert_not_called()
+        mock_cu.assert_not_called()
+        # Discord must still be called
+        mock_discord.assert_called_once()
 
     def test_pipeline_survives_discord_failure(self):
         # _run_pipeline_safe is the real background task — it catches all exceptions
@@ -610,7 +613,8 @@ class TestPipelineSadFlow:
             # Must NOT raise — safe wrapper absorbs the MongoDB exception
             asyncio.run(_run_pipeline_safe(_make_event()))
 
-    def test_pipeline_creates_clickup_tickets_per_failure(self):
+    def test_discord_receives_report_with_failure_count(self):
+        # Discord is always called; it receives the real failure count even without a bug summary.
         from webhook.router import _run_pipeline
 
         result = _failing_test_result()
@@ -622,16 +626,17 @@ class TestPipelineSadFlow:
             patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=result),
             patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
             patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value="Two tests failed"),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock, return_value=["cu-001", "cu-002"]) as mock_cu,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value=""),
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock),
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="msg-123") as mock_discord,
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
         ):
             asyncio.run(_run_pipeline(_make_event()))
 
-        # Verify ClickUp was called with the right failure data (run_id, event, test_plan, result, bug_summary)
-        call_args = mock_cu.call_args
-        passed_result = call_args.args[3]  # 0=run_id, 1=event, 2=test_plan, 3=result
+        mock_discord.assert_called_once()
+        # Verify the result passed to Discord has the correct failure count
+        call_args = mock_discord.call_args
+        passed_result = call_args.args[3]  # (run_id, event, test_plan, result, ...)
         assert passed_result.failed == 2
 
 
