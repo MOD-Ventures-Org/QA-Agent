@@ -28,13 +28,20 @@ SUITE_MAP = {
 
 async def run_tests(test_plan: TestPlan) -> TestResult:
     paths = []
+    selected_flags = []
     for flag, path in SUITE_MAP.items():
-        if getattr(test_plan, flag, False) and os.path.exists(path):
-            paths.append(path)
+        if getattr(test_plan, flag, False):
+            selected_flags.append(flag)
+            if os.path.exists(path):
+                paths.append(path)
+            else:
+                logger.warning("Expected test suite path missing: %s", path)
 
     if test_plan.run_generated_tests and GENERATED_DIR.exists():
         generated = [str(p) for p in GENERATED_DIR.glob("test_*.py")]
         paths.extend(generated)
+
+    logger.info("Selected suite flags=%s paths=%s", selected_flags, paths)
 
     if not paths:
         logger.info("No test suites selected — skipping run")

@@ -73,8 +73,16 @@ def _should_ignore_event(event_type: str) -> bool:
     return event_type == "workflow_run"
 
 
+def _selected_suites(test_plan: TestPlan) -> list[str]:
+    return [
+        name
+        for name in TestPlan.__dataclass_fields__
+        if name.startswith("run_") and getattr(test_plan, name, False)
+    ]
+
+
 async def _run_pipeline(event: GitHubPushEvent):
-    from claude.analyzer import analyze_event
+    from claude.analyzer import TestPlan, analyze_event
     from claude.test_generator import generate_tests
     from claude.evaluator import evaluate_product
     from testing.runner import run_tests
@@ -87,7 +95,9 @@ async def _run_pipeline(event: GitHubPushEvent):
     logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
 
     test_plan = await analyze_event(event)
+    selected_suites = _selected_suites(test_plan)
     logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
+    logger.info(f"Selected suites: {selected_suites}")
 
     generated_tests = None
     if test_plan.run_generated_tests:

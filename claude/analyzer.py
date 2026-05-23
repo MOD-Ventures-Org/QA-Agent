@@ -95,6 +95,9 @@ def _is_deployment_event(event: GitHubPushEvent) -> bool:
 
 
 async def analyze_event(event: GitHubPushEvent) -> TestPlan:
+    logger.info(
+        f"Analyzing event type={event.event_type} repo={event.repo_name} branch={event.branch}"
+    )
     if _is_deployment_event(event):
         logger.info("Deployment event detected — enforcing deployment validation plan")
         return _deployment_validation_plan()
@@ -117,7 +120,9 @@ async def analyze_event(event: GitHubPushEvent) -> TestPlan:
         )
         raw = message.content[0].text.strip()
         data = json.loads(raw)
-        return TestPlan(**{k: v for k, v in data.items() if k in TestPlan.__dataclass_fields__})
+        test_plan = TestPlan(**{k: v for k, v in data.items() if k in TestPlan.__dataclass_fields__})
+        logger.info(f"Analyzer decided test_plan={test_plan}")
+        return test_plan
     except Exception as e:
         logger.error(f"Claude analyzer failed: {e} — falling back to all suites")
         return _all_suites_plan(f"Parse error: {e}")
