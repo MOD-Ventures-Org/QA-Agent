@@ -24,6 +24,8 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
         branch = payload.get("pull_request", {}).get("head", {}).get("ref", "")
     elif event_type == "release":
         branch = payload.get("release", {}).get("tag_name", "")
+    elif event_type in ("deployment", "deployment_status"):
+        branch = payload.get("deployment", {}).get("ref", "") or payload.get("deployment_status", {}).get("deployment", {}).get("ref", "")
     elif event_type == "workflow_run":
         branch = payload.get("workflow_run", {}).get("head_branch", "")
 

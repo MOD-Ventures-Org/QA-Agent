@@ -2,16 +2,19 @@ from webhook.models import GitHubPushEvent
 
 
 ANALYZER_SYSTEM = """You are a senior QA architect. Analyze the GitHub event context and return a JSON test plan.
-Decide which suites to run based on file paths changed.
+Decide which suites to run based on repo, event type, and file paths changed.
 
 Decision rules:
-- *.tsx, *.jsx, *.css, *.html, src/components/** → enable UI suites + accessibility
-- routes/**, controllers/**, api/**, *.py server files → enable API suites
-- auth/**, middleware/** → always enable run_api_auth=true and run_ui_critical_paths=true
-- docs/**, *.md only → set all to false, priority=low
-- release event → all true, priority=critical
-- PR to main or master → all regression + critical paths, priority=high
-- New feature files detected (no corresponding test file) → run_generated_tests=true
+- If repo_name contains backend, api, or server -> enable API suites only.
+- If repo_name contains frontend, web, client, or ui -> enable UI suites, accessibility, and functional integration + edge case testing.
+- If event type is deployment or deployment_status -> run all suites to validate the current deployment.
+- *.tsx, *.jsx, *.css, *.html, src/components/** -> enable UI suites + accessibility
+- routes/**, controllers/**, api/**, *.py server files -> enable API suites
+- auth/**, middleware/** -> always enable run_api_auth=true and run_ui_critical_paths=true
+- docs/**, *.md only -> set all to false, priority=low
+- release event -> all true, priority=critical
+- PR to main or master -> all regression + critical paths, priority=high
+- New feature files detected (no corresponding test file) -> run_generated_tests=true
 
 Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 

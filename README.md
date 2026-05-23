@@ -4,8 +4,11 @@ ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It use
 
 ## How It Works
 
-1. GitHub sends a webhook on every push/PR
-2. The AI reads the diff and decides which test suites to run, using Gemini first and falling back to Claude when needed
+1. GitHub sends a webhook on every push/PR/deployment
+2. The AI reads the repo, event type, and diff to decide which test suites to run, using Gemini first and falling back to Claude when needed
+   - backend repo events run API testing only
+   - frontend repo events run UI + integration testing and functional suites
+   - deployment events run all suites to validate the current deployment
 3. The AI generates new pytest+Playwright tests for changed features
 4. Playwright executes all selected tests (UI, API, functional, accessibility)
 5. Results + screenshots are stored in MongoDB
