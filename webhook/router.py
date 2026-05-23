@@ -127,6 +127,19 @@ async def _run_pipeline(event: GitHubPushEvent):
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 
+async def _run_pipeline_safe(event: GitHubPushEvent):
+    try:
+        await _run_pipeline(event)
+    except Exception as exc:
+        logger.exception(
+            "Pipeline failed for %s [%s] event=%s: %s",
+            event.repo_name,
+            event.branch,
+            event.event_type,
+            exc,
+        )
+
+
 @router.post("/github")
 async def github_webhook(
     request: Request,
@@ -140,6 +153,6 @@ async def github_webhook(
         logger.info(f"Ignoring webhook event={event_type} repo={event.repo_name} branch={event.branch}")
         return {"status": "ignored", "event": event_type}
 
-    background_tasks.add_task(_run_pipeline, event)
+    background_tasks.add_task(_run_pipeline_safe, event)
     logger.info(f"Webhook received event={event_type} repo={event.repo_name} branch={event.branch}")
     return {"status": "accepted", "event": event_type}
