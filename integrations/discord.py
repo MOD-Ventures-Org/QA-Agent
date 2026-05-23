@@ -118,6 +118,10 @@ async def post_discord_report(
     evaluation=None,
     generated_tests=None,
 ) -> str:
+    if not settings.discord_enabled:
+        logger.info("Discord posting disabled by configuration — skipping Discord post")
+        return ""
+
     if not settings.discord_webhook_url:
         logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord post")
         return ""

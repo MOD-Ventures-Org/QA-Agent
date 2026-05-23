@@ -21,6 +21,10 @@ async def file_bug_tickets(
     result: TestResult,
     bug_summary: str,
 ) -> List[str]:
+    if not settings.clickup_enabled:
+        logger.info("ClickUp posting disabled by configuration — skipping ticket creation")
+        return []
+
     if not settings.clickup_api_token or not settings.clickup_list_id:
         logger.info("ClickUp credentials not set — skipping ticket creation")
         return []
