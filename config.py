@@ -3,7 +3,8 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str = Field(..., env="ANTHROPIC_API_KEY")
+    anthropic_api_key: str = Field("", env="ANTHROPIC_API_KEY")
+    gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
     webhook_secret: str = Field(..., env="WEBHOOK_SECRET")
     discord_webhook_url: str = Field(..., env="DISCORD_WEBHOOK_URL")
     ngrok_authtoken: str = Field("", env="NGROK_AUTHTOKEN")

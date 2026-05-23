@@ -1,4 +1,4 @@
-import anthropic
+from claude.client import DualAIClient
 
 from config import settings
 from utils.logger import get_logger
@@ -6,7 +6,7 @@ from claude.analyzer import TestPlan
 from claude.prompts import REPORT_WRITER_SYSTEM, report_writer_user_prompt
 
 logger = get_logger(__name__)
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
 
 
 async def write_bug_report(test_plan: TestPlan, test_result) -> str:

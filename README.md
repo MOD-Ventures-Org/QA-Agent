@@ -1,12 +1,12 @@
 # ARIA — Autonomous Regression & Intelligence Agent
 
-ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It uses Claude to analyze changes, generate tests, execute them with Playwright, and report results to Discord and ClickUp.
+ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It uses a dual-provider AI client with Anthropic Claude and Gemini: Gemini is preferred, and Claude is used as a fallback when Gemini fails.
 
 ## How It Works
 
 1. GitHub sends a webhook on every push/PR
-2. Claude reads the diff and decides which test suites to run
-3. Claude generates new pytest+Playwright tests for changed features
+2. The AI reads the diff and decides which test suites to run, using Gemini first and falling back to Claude when needed
+3. The AI generates new pytest+Playwright tests for changed features
 4. Playwright executes all selected tests (UI, API, functional, accessibility)
 5. Results + screenshots are stored in MongoDB
 6. Claude writes a plain-English bug summary
@@ -18,7 +18,7 @@ ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It use
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/RamaishaRehman/QA-Agent.git
+git clone https://github.com/MOD-Ventures-Org/QA-Agent.git
 cd QA-Agent/aria
 pip install -r requirements.txt
 playwright install chromium
@@ -80,7 +80,8 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API key |
+| `GEMINI_API_KEY` | Gemini API key |
 | `WEBHOOK_SECRET` | Secret for validating GitHub webhooks |
 | `DISCORD_WEBHOOK_URL` | Discord incoming webhook URL |
 | `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
@@ -92,10 +93,13 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 | `BASE_URL_API` | API base URL for httpx tests |
 | `PLAYWRIGHT_HEADLESS` | `True` for headless mode (default: `True`) |
 
+> Both `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` should be configured so the agent can fall back between providers.
+
 ## GitHub Actions CI
 
 Push to any branch to trigger the pipeline automatically. Add these secrets to your GitHub repo (`Settings → Secrets → Actions`):
 
+- `GEMINI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `CLICKUP_API_TOKEN`

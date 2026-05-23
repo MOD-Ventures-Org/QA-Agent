@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-import anthropic
+from claude.client import DualAIClient
 
 from config import settings
 from utils.logger import get_logger
@@ -14,7 +14,7 @@ from claude.analyzer import TestPlan
 from claude.prompts import TEST_GENERATOR_SYSTEM, test_generator_user_prompt
 
 logger = get_logger(__name__)
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
 
 GENERATED_DIR = Path(__file__).parent.parent / "testing" / "suites" / "generated"
 PRODUCT_CONTEXT_PATH = Path(__file__).parent.parent / "PRODUCT_CONTEXT.md"

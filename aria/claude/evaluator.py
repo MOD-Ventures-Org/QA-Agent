@@ -2,14 +2,14 @@ import json
 from dataclasses import dataclass, field
 from typing import List
 
-import anthropic
+from claude.client import DualAIClient
 
 from config import settings
 from utils.logger import get_logger
 from claude.prompts import EVALUATOR_SYSTEM, evaluator_user_prompt
 
 logger = get_logger(__name__)
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
 
 
 @dataclass

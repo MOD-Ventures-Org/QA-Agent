@@ -80,7 +80,8 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `ANTHROPIC_API_KEY` | Anthropic Claude API key |
+| `GEMINI_API_KEY` | Gemini API key |
 | `GITHUB_WEBHOOK_SECRET` | Secret for validating GitHub webhooks |
 | `DISCORD_WEBHOOK_URL` | Discord incoming webhook URL |
 | `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
@@ -96,6 +97,7 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 
 Push to any branch to trigger the pipeline automatically. Add these secrets to your GitHub repo (`Settings → Secrets → Actions`):
 
+- `GEMINI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `CLICKUP_API_TOKEN`
