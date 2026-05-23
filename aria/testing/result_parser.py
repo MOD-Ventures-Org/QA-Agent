@@ -25,11 +25,23 @@ def parse_pytest_json(report_path: str) -> TestResult:
         data = json.load(f)
 
     summary = data.get("summary", {})
-    total = summary.get("total", 0)
-    passed = summary.get("passed", 0)
-    failed = summary.get("failed", 0)
-    errors = summary.get("error", 0)
+    total = summary.get("total")
+    passed = summary.get("passed")
+    failed = summary.get("failed")
+    errors = summary.get("error")
     duration = data.get("duration", 0.0)
+
+    tests = data.get("tests", [])
+    computed = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    for test in tests:
+        outcome = test.get("outcome")
+        if outcome in computed:
+            computed[outcome] += 1
+
+    total = total if total is not None else len(tests)
+    passed = passed if passed is not None else computed["passed"]
+    failed = failed if failed is not None else computed["failed"]
+    errors = errors if errors is not None else computed["error"]
 
     failure_details = []
     for test in data.get("tests", []):
