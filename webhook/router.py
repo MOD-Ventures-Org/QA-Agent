@@ -69,6 +69,10 @@ def _should_run_evaluation(event: GitHubPushEvent) -> bool:
     return False
 
 
+def _should_ignore_event(event_type: str) -> bool:
+    return event_type == "workflow_run"
+
+
 async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import analyze_event
     from claude.test_generator import generate_tests
@@ -122,6 +126,10 @@ async def github_webhook(
     event_type = request.headers.get("X-GitHub-Event", "push")
     payload = json.loads(body)
     event = _extract_event(event_type, payload)
+    if _should_ignore_event(event_type):
+        logger.info(f"Ignoring webhook event={event_type} repo={event.repo_name} branch={event.branch}")
+        return {"status": "ignored", "event": event_type}
+
     background_tasks.add_task(_run_pipeline, event)
     logger.info(f"Webhook received event={event_type} repo={event.repo_name} branch={event.branch}")
     return {"status": "accepted", "event": event_type}

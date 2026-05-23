@@ -6,6 +6,11 @@ import anthropic
 import httpx
 from anthropic import Anthropic
 
+try:
+    from google import genai
+except ImportError:  # pragma: no cover
+    genai = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +40,7 @@ class DualAIClient:
         self,
         anthropic_api_key: str = "",
         gemini_api_key: str = "",
-        gemini_model: str = "gemini-1.5-turbo",
+        gemini_model: str = "gemini-3.5-flash",
     ):
         self.anthropic_client: Optional[Anthropic] = None
         if anthropic_api_key:
@@ -44,6 +49,10 @@ class DualAIClient:
         self.gemini_api_key = gemini_api_key
         self.gemini_model = gemini_model
         self.http = httpx.Client(timeout=30.0)
+        self.gemini_client = None
+        if self.gemini_api_key and genai is not None:
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+
         self.messages = DualMessagesProxy(self)
 
     def create(
@@ -119,6 +128,18 @@ class DualAIClient:
             raise ValueError("Gemini API key is not configured")
 
         gemini_model = model if "gemini" in model.lower() else self.gemini_model
+
+        if self.gemini_client is not None:
+            try:
+                prompt = self._build_gemini_prompt(system, messages)
+                response = self.gemini_client.models.generate_content(
+                    model=gemini_model,
+                    contents=prompt,
+                )
+                return response.text
+            except Exception as exc:
+                raise self._wrap_gemini_error(exc)
+
         url = f"https://gemini.googleapis.com/v1/models/{gemini_model}:generateMessage?key={self.gemini_api_key}"
         payload = {
             "temperature": temperature,
@@ -133,9 +154,30 @@ class DualAIClient:
             ],
         }
 
-        response = self.http.post(url, json=payload)
-        response.raise_for_status()
-        return self._extract_gemini_text(response.json())
+        try:
+            response = self.http.post(url, json=payload)
+            response.raise_for_status()
+            return self._extract_gemini_text(response.json())
+        except Exception as exc:
+            raise self._wrap_gemini_error(exc)
+
+    def _build_gemini_prompt(self, system: str, messages: List[Dict[str, str]]) -> str:
+        parts = []
+        if system:
+            parts.append(f"System:\n{system}")
+        for msg in messages:
+            role = msg.get("role", "user").capitalize()
+            parts.append(f"{role}:\n{msg.get('content', '')}")
+        return "\n\n".join(parts)
+
+    def _wrap_gemini_error(self, exc: Exception) -> Exception:
+        message = str(exc) or repr(exc)
+        lowered = message.lower()
+        billing_terms = ("billing", "quota", "payment", "card", "insufficient funds", "forbidden", "402", "403")
+        if any(term in lowered for term in billing_terms):
+            logger.error("Gemini billing issue detected: %s", message)
+            return RuntimeError(f"Gemini billing issue: {message}")
+        return exc
 
     def _extract_claude_text(self, response: Any) -> str:
         if response.content and len(response.content) > 0:
