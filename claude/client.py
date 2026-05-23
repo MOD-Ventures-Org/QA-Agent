@@ -78,7 +78,7 @@ class DualAIClient:
 
     def _provider_order(self, model: str) -> List[str]:
         normalized = model.lower() if model else ""
-        if "claude" in normalized and self.claude_client:
+        if "claude" in normalized and self.anthropic_client:
             return ["claude", "gemini"]
         if "gemini" in normalized and self.gemini_api_key:
             return ["gemini", "claude"]
