@@ -6,7 +6,12 @@ from claude.analyzer import TestPlan
 from claude.prompts import REPORT_WRITER_SYSTEM, report_writer_user_prompt
 
 logger = get_logger(__name__)
-client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
+client = DualAIClient(
+    settings.anthropic_api_key,
+    settings.kimi_api_key,
+    settings.kimi_model,
+    settings.kimi_api_url,
+)
 
 
 async def write_bug_report(test_plan: TestPlan, test_result) -> str:

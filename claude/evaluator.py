@@ -9,7 +9,12 @@ from utils.logger import get_logger
 from claude.prompts import EVALUATOR_SYSTEM, evaluator_user_prompt
 
 logger = get_logger(__name__)
-client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
+client = DualAIClient(
+    settings.anthropic_api_key,
+    settings.kimi_api_key,
+    settings.kimi_model,
+    settings.kimi_api_url,
+)
 
 
 @dataclass

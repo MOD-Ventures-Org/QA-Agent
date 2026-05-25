@@ -10,7 +10,12 @@ from webhook.models import GitHubPushEvent
 from claude.prompts import ANALYZER_SYSTEM, analyzer_user_prompt
 
 logger = get_logger(__name__)
-client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
+client = DualAIClient(
+    settings.anthropic_api_key,
+    settings.kimi_api_key,
+    settings.kimi_model,
+    settings.kimi_api_url,
+)
 
 
 @dataclass

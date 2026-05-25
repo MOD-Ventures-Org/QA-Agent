@@ -4,7 +4,9 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     anthropic_api_key: str = Field("", env="ANTHROPIC_API_KEY")
-    gemini_api_key: str = Field(..., env="GEMINI_API_KEY")
+    kimi_api_key: str = Field("", env="KIMI_API_KEY")
+    kimi_model: str = Field("kimi-1.0", env="KIMI_MODEL")
+    kimi_api_url: str = Field("https://api.kimi.ai/v1/chat/completions", env="KIMI_API_URL")
     github_webhook_secret: str = Field(..., env="GITHUB_WEBHOOK_SECRET")
     discord_webhook_url: str = Field(..., env="DISCORD_WEBHOOK_URL")
     ngrok_authtoken: str = Field("", env="NGROK_AUTHTOKEN")

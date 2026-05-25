@@ -1,11 +1,11 @@
 # ARIA — Autonomous Regression & Intelligence Agent
 
-ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It uses a dual-provider AI client with Anthropic Claude and Gemini: Gemini is preferred, and Claude is used as a fallback when Gemini fails.
+ARIA is a fully autonomous QA agent that runs on every GitHub push or PR. It uses a dual-provider AI client with Anthropic Claude and Kimi: Kimi is preferred, and Claude is used as a fallback when Kimi fails.
 
 ## How It Works
 
 1. GitHub sends a webhook on every push/PR/deployment
-2. The AI reads the repo, event type, and diff to decide which test suites to run, using Gemini first and falling back to Claude when needed
+2. The AI reads the repo, event type, and diff to decide which test suites to run, using Kimi first and falling back to Claude when needed
    - backend repo events run API testing only
    - frontend repo events run UI + integration testing and functional suites
    - deployment events run all suites to validate the current deployment
@@ -86,7 +86,9 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 | Variable | Description |
 |---|---|
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key |
-| `GEMINI_API_KEY` | Gemini API key |
+| `KIMI_API_KEY` | Kimi API key |
+| `KIMI_MODEL` | Kimi model name |
+| `KIMI_API_URL` | Kimi API base URL |
 | `WEBHOOK_SECRET` | Secret for validating GitHub webhooks |
 | `DISCORD_WEBHOOK_URL` | Discord incoming webhook URL |
 | `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
@@ -98,13 +100,13 @@ python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
 | `BASE_URL_API` | API base URL for httpx tests |
 | `PLAYWRIGHT_HEADLESS` | `True` for headless mode (default: `True`) |
 
-> Both `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` should be configured so the agent can fall back between providers.
+> Both `ANTHROPIC_API_KEY` and `KIMI_API_KEY` should be configured so the agent can fall back between providers.
 
 ## GitHub Actions CI
 
 Push to any branch to trigger the pipeline automatically. Add these secrets to your GitHub repo (`Settings → Secrets → Actions`):
 
-- `GEMINI_API_KEY`
+- `KIMI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `CLICKUP_API_TOKEN`

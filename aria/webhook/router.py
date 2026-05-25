@@ -61,12 +61,12 @@ async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import analyze_event
     from claude.test_generator import generate_tests
     from claude.evaluator import evaluate_product
+    from claude.report_writer import write_bug_report
+    from integrations.clickup import file_bug_tickets
     from testing.runner import run_tests
     from testing.regression_watcher import check_regression
-    from storage.mongo import save_test_run, save_bug_report
-    from claude.report_writer import write_bug_report
+    from storage.mongo import save_bug_report, save_test_run
     from integrations.discord import post_discord_report
-    from integrations.clickup import file_bug_tickets
 
     logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
 
@@ -89,11 +89,47 @@ async def _run_pipeline(event: GitHubPushEvent):
     clickup_ids = []
     if test_result.failed > 0:
         bug_summary = await write_bug_report(test_plan, test_result)
-        clickup_ids = await file_bug_tickets(event, test_plan, test_result, bug_summary)
+        clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
 
     discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation)
     logger.info(f"Discord report posted message_id={discord_message_id}")
+
+
+async def _run_pipeline_safe(event: GitHubPushEvent):
+    try:
+        await _run_pipeline(event)
+    except Exception as exc:
+        logger.exception(
+            "Pipeline failed for %s [%s] event=%s: %s",
+            event.repo_name,
+            event.branch,
+            event.event_type,
+            exc,
+        )
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+        from integrations.discord import post_discord_report
+
+        error_plan = TestPlan(reasoning="Pipeline failure", priority="critical")
+        error_result = TestResult(
+            total=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            duration=0.0,
+            failure_details=[{"name": "pipeline", "error": str(exc), "traceback": ""}],
+        )
+        try:
+            await post_discord_report(
+                "pipeline-error",
+                event,
+                error_plan,
+                error_result,
+                f"Pipeline exception: {exc}",
+            )
+        except Exception as discord_exc:
+            logger.exception("Failed to send pipeline failure Discord report: %s", discord_exc)
 
 
 @router.post("/github")
@@ -105,6 +141,6 @@ async def github_webhook(
     event_type = request.headers.get("X-GitHub-Event", "push")
     payload = json.loads(body)
     event = _extract_event(event_type, payload)
-    background_tasks.add_task(_run_pipeline, event)
+    background_tasks.add_task(_run_pipeline_safe, event)
     logger.info(f"Webhook received event={event_type} repo={event.repo_name} branch={event.branch}")
     return {"status": "accepted", "event": event_type}

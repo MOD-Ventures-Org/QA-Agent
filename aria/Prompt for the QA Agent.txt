@@ -100,7 +100,7 @@ aria/
 
 ## config.py — load all from .env:
 ANTHROPIC_API_KEY
-GEMINI_API_KEY
+KIMI_API_KEY
 GITHUB_WEBHOOK_SECRET
 DISCORD_WEBHOOK_URL
 NGROK_AUTHTOKEN
@@ -259,7 +259,7 @@ Generate a complete GitHub Actions workflow that:
   6. Run: python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
   7. Upload report.json and /tmp/aria_screenshots/ as artifacts
   8. Post results to Discord via a small inline Python script using env secrets
-- Use GitHub Actions secrets for: GEMINI_API_KEY, ANTHROPIC_API_KEY, DISCORD_WEBHOOK_URL, CLICKUP_API_TOKEN,
+- Use GitHub Actions secrets for: KIMI_API_KEY, ANTHROPIC_API_KEY, DISCORD_WEBHOOK_URL, CLICKUP_API_TOKEN,
   MONGODB_URI, BASE_URL_FRONTEND, BASE_URL_API
 
 ## requirements.txt — pin all versions, include:

@@ -86,9 +86,12 @@ async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import TestPlan, analyze_event
     from claude.test_generator import generate_tests
     from claude.evaluator import evaluate_product
+    from claude.report_writer import write_bug_report
+    from integrations.clickup import file_bug_tickets
     from testing.runner import run_tests
     from testing.regression_watcher import check_regression
-    from storage.mongo import save_test_run
+    from testing.result_parser import TestResult
+    from storage.mongo import save_bug_report, save_test_run
     from integrations.discord import post_discord_report
 
     logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
@@ -115,12 +118,18 @@ async def _run_pipeline(event: GitHubPushEvent):
     run_id = await save_test_run(event, test_plan, test_result, evaluation)
     logger.info(f"Saved test run id={run_id}")
 
+    bug_summary = ""
+    clickup_ids = []
     if test_result.failed > 0:
         logger.warning(f"Tests failed: {test_result.failed} failure(s) on {event.repo_name} [{event.branch}]")
         for failure in (test_result.failure_details or []):
             logger.warning(f"  FAILED: {failure.get('name')} — {failure.get('error', '')[:200]}")
 
-    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, "", evaluation, generated_tests)
+        bug_summary = await write_bug_report(test_plan, test_result)
+        clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
+        await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
+
+    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests)
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 
@@ -135,6 +144,29 @@ async def _run_pipeline_safe(event: GitHubPushEvent):
             event.event_type,
             exc,
         )
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+        from integrations.discord import post_discord_report
+
+        error_plan = TestPlan(reasoning="Pipeline failure", priority="critical")
+        error_result = TestResult(
+            total=0,
+            passed=0,
+            failed=0,
+            errors=1,
+            duration=0.0,
+            failure_details=[{"name": "pipeline", "error": str(exc), "traceback": ""}],
+        )
+        try:
+            await post_discord_report(
+                "pipeline-error",
+                event,
+                error_plan,
+                error_result,
+                f"Pipeline exception: {exc}",
+            )
+        except Exception as discord_exc:
+            logger.exception("Failed to send pipeline failure Discord report: %s", discord_exc)
 
 
 @router.post("/github")

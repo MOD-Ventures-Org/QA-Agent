@@ -551,8 +551,8 @@ class TestPipelineHappyFlow:
 class TestPipelineSadFlow:
     """Failures in one stage must not crash the whole pipeline."""
 
-    def test_no_bug_report_or_tickets_when_tests_fail(self):
-        # Bug summaries and ClickUp tickets are disabled — failures only go to logs + Discord.
+    def test_creates_bug_report_and_clickup_when_tests_fail(self):
+        # Regular failures should still generate a bug summary and ClickUp tickets, with Discord reporting the result.
         from webhook.router import _run_pipeline
 
         with (
@@ -565,15 +565,14 @@ class TestPipelineSadFlow:
             patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
             patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_cu,
             patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
+            patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
         ):
             asyncio.run(_run_pipeline(_make_event()))
 
-        # Bug report and ClickUp must NOT be called
-        mock_bug.assert_not_called()
-        mock_cu.assert_not_called()
-        # Discord must still be called
+        mock_bug.assert_called_once()
+        mock_cu.assert_called_once()
         mock_discord.assert_called_once()
+        mock_save_bug.assert_called_once()
 
     def test_pipeline_survives_discord_failure(self):
         # _run_pipeline_safe is the real background task — it catches all exceptions
@@ -606,15 +605,18 @@ class TestPipelineSadFlow:
             patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
             patch("storage.mongo.save_test_run", new_callable=AsyncMock, side_effect=Exception("Mongo down")),
             patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock),
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value=""),
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_clickup,
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
         ):
-            # Must NOT raise — safe wrapper absorbs the MongoDB exception
+            # Must NOT raise — safe wrapper absorbs the MongoDB exception and still posts to Discord
             asyncio.run(_run_pipeline_safe(_make_event()))
 
+        mock_discord.assert_called_once()
+        mock_clickup.assert_not_called()
+
     def test_discord_receives_report_with_failure_count(self):
-        # Discord is always called; it receives the real failure count even without a bug summary.
+        # Discord is always called; it receives the real failure count even with a bug summary.
         from webhook.router import _run_pipeline
 
         result = _failing_test_result()
@@ -646,38 +648,38 @@ class TestPipelineSadFlow:
 
 class TestDualAIClientHappyFlow:
 
-    def test_gemini_used_first_by_default(self):
+    def test_kimi_used_first_by_default(self):
         from claude.client import DualAIClient
 
-        c = DualAIClient(anthropic_api_key="ant-key", gemini_api_key="gem-key")
-        order = c._provider_order("gemini-flash")
-        assert order[0] == "gemini"
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
+        order = c._provider_order("kimi-1.0")
+        assert order[0] == "kimi"
 
-    def test_falls_back_to_claude_when_gemini_fails(self):
+    def test_falls_back_to_claude_when_kimi_fails(self):
         from claude.client import DualAIClient, DualAIResponse
 
-        c = DualAIClient(anthropic_api_key="ant-key", gemini_api_key="gem-key")
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
 
         with (
-            patch.object(c, "_generate_gemini", side_effect=RuntimeError("Gemini down")),
+            patch.object(c, "_generate_kimi", side_effect=RuntimeError("Kimi down")),
             patch.object(c, "_generate_claude", return_value="Claude answer"),
         ):
-            response = c.create(model="gemini-flash", system="sys", messages=[{"role": "user", "content": "hi"}])
+            response = c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
 
         assert response.content[0].text == "Claude answer"
 
-    def test_gemini_succeeds_on_first_try(self):
+    def test_kimi_succeeds_on_first_try(self):
         from claude.client import DualAIClient
 
-        c = DualAIClient(anthropic_api_key="ant-key", gemini_api_key="gem-key")
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
 
         with (
-            patch.object(c, "_generate_gemini", return_value="Gemini answer"),
+            patch.object(c, "_generate_kimi", return_value="Kimi answer"),
             patch.object(c, "_generate_claude") as mock_claude,
         ):
-            response = c.create(model="gemini-flash", system="sys", messages=[{"role": "user", "content": "hi"}])
+            response = c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
 
-        assert response.content[0].text == "Gemini answer"
+        assert response.content[0].text == "Kimi answer"
         mock_claude.assert_not_called()
 
 
@@ -686,14 +688,14 @@ class TestDualAIClientSadFlow:
     def test_raises_when_both_providers_fail(self):
         from claude.client import DualAIClient
 
-        c = DualAIClient(anthropic_api_key="ant-key", gemini_api_key="gem-key")
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
 
         with (
-            patch.object(c, "_generate_gemini", side_effect=RuntimeError("Gemini down")),
+            patch.object(c, "_generate_kimi", side_effect=RuntimeError("Kimi down")),
             patch.object(c, "_generate_claude", side_effect=RuntimeError("Claude down")),
         ):
             with pytest.raises(RuntimeError):
-                c.create(model="gemini-flash", system="sys", messages=[{"role": "user", "content": "hi"}])
+                c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
 
     def test_raises_when_no_api_keys_configured(self):
         from claude.client import DualAIClient
@@ -701,13 +703,13 @@ class TestDualAIClientSadFlow:
         c = DualAIClient()  # no keys
 
         with pytest.raises(Exception):
-            c.create(model="gemini-flash", system="sys", messages=[{"role": "user", "content": "hi"}])
+            c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
 
     def test_billing_error_is_wrapped_with_clear_message(self):
         from claude.client import DualAIClient
 
-        c = DualAIClient(anthropic_api_key="ant-key", gemini_api_key="gem-key")
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
         billing_exc = Exception("403 Forbidden: billing account inactive")
-        wrapped = c._wrap_gemini_error(billing_exc)
+        wrapped = c._wrap_kimi_error(billing_exc)
 
         assert "billing" in str(wrapped).lower()

@@ -12,7 +12,12 @@ from claude.analyzer import TestPlan
 from claude.prompts import TEST_GENERATOR_SYSTEM, test_generator_user_prompt
 
 logger = get_logger(__name__)
-client = DualAIClient(settings.anthropic_api_key, settings.gemini_api_key)
+client = DualAIClient(
+    settings.anthropic_api_key,
+    settings.kimi_api_key,
+    settings.kimi_model,
+    settings.kimi_api_url,
+)
 
 GENERATED_DIR = Path(__file__).parent.parent / "testing" / "suites" / "generated"
 

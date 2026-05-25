@@ -6,11 +6,6 @@ import anthropic
 import httpx
 from anthropic import Anthropic
 
-try:
-    from google import genai
-except ImportError:  # pragma: no cover
-    genai = None
-
 logger = logging.getLogger(__name__)
 
 
@@ -39,19 +34,18 @@ class DualAIClient:
     def __init__(
         self,
         anthropic_api_key: str = "",
-        gemini_api_key: str = "",
-        gemini_model: str = "gemini-3.5-flash",
+        kimi_api_key: str = "",
+        kimi_model: str = "kimi-1.0",
+        kimi_api_url: str = "https://api.kimi.ai/v1/chat/completions",
     ):
         self.anthropic_client: Optional[Anthropic] = None
         if anthropic_api_key:
             self.anthropic_client = Anthropic(api_key=anthropic_api_key)
 
-        self.gemini_api_key = gemini_api_key
-        self.gemini_model = gemini_model
+        self.kimi_api_key = kimi_api_key
+        self.kimi_model = kimi_model
+        self.kimi_api_url = kimi_api_url
         self.http = httpx.Client(timeout=30.0)
-        self.gemini_client = None
-        if self.gemini_api_key and genai is not None:
-            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
 
         self.messages = DualMessagesProxy(self)
 
@@ -69,8 +63,8 @@ class DualAIClient:
 
         for provider in providers:
             try:
-                if provider == "gemini":
-                    text = self._generate_gemini(model, system, messages, temperature, max_tokens)
+                if provider == "kimi":
+                    text = self._generate_kimi(model, system, messages, temperature, max_tokens)
                 else:
                     text = self._generate_claude(model, system, messages, temperature, max_tokens)
 
@@ -88,12 +82,14 @@ class DualAIClient:
     def _provider_order(self, model: str) -> List[str]:
         normalized = model.lower() if model else ""
         if "claude" in normalized and self.anthropic_client:
-            return ["claude", "gemini"]
-        if "gemini" in normalized and self.gemini_api_key:
-            return ["gemini", "claude"]
-        if self.gemini_api_key:
-            return ["gemini", "claude"]
-        return ["claude", "gemini"]
+            return ["claude", "kimi"]
+        if "kimi" in normalized:
+            if self.kimi_api_key:
+                return ["kimi", "claude"]
+            return ["claude"]
+        if self.kimi_api_key:
+            return ["kimi", "claude"]
+        return ["claude"]
 
     def _generate_claude(
         self,
@@ -116,7 +112,7 @@ class DualAIClient:
 
         return self._extract_claude_text(response)
 
-    def _generate_gemini(
+    def _generate_kimi(
         self,
         model: str,
         system: str,
@@ -124,71 +120,52 @@ class DualAIClient:
         temperature: float,
         max_tokens: int,
     ) -> str:
-        if not self.gemini_api_key:
-            raise ValueError("Gemini API key is not configured")
+        if not self.kimi_api_key:
+            raise ValueError("Kimi API key is not configured")
 
-        gemini_model = model if "gemini" in model.lower() else self.gemini_model
-
-        if self.gemini_client is not None:
-            try:
-                prompt = self._build_gemini_prompt(system, messages)
-                response = self.gemini_client.models.generate_content(
-                    model=gemini_model,
-                    contents=prompt,
-                )
-                return response.text
-            except Exception as exc:
-                raise self._wrap_gemini_error(exc)
-
-        url = f"https://gemini.googleapis.com/v1/models/{gemini_model}:generateMessage?key={self.gemini_api_key}"
+        kimi_model = model if "kimi" in model.lower() else self.kimi_model
         payload = {
+            "model": kimi_model,
+            "messages": [{"role": "system", "content": system}] + messages,
             "temperature": temperature,
-            "candidateCount": 1,
-            "maxOutputTokens": max_tokens,
-            "messages": [
-                {"author": "system", "content": {"type": "text", "text": system}}
-            ]
-            + [
-                {"author": msg["role"], "content": {"type": "text", "text": msg["content"]}}
-                for msg in messages
-            ],
+            "max_tokens": max_tokens,
         }
+        headers = {"Authorization": f"Bearer {self.kimi_api_key}"}
 
         try:
-            response = self.http.post(url, json=payload)
+            response = self.http.post(self.kimi_api_url, json=payload, headers=headers)
             response.raise_for_status()
-            return self._extract_gemini_text(response.json())
+            return self._extract_kimi_text(response.json())
         except Exception as exc:
-            raise self._wrap_gemini_error(exc)
+            raise self._wrap_kimi_error(exc)
 
-    def _build_gemini_prompt(self, system: str, messages: List[Dict[str, str]]) -> str:
-        parts = []
-        if system:
-            parts.append(f"System:\n{system}")
-        for msg in messages:
-            role = msg.get("role", "user").capitalize()
-            parts.append(f"{role}:\n{msg.get('content', '')}")
-        return "\n\n".join(parts)
-
-    def _wrap_gemini_error(self, exc: Exception) -> Exception:
+    def _wrap_kimi_error(self, exc: Exception) -> Exception:
         message = str(exc) or repr(exc)
         lowered = message.lower()
         billing_terms = ("billing", "quota", "payment", "card", "insufficient funds", "forbidden", "402", "403")
         if any(term in lowered for term in billing_terms):
-            logger.error("Gemini billing issue detected: %s", message)
-            return RuntimeError(f"Gemini billing issue: {message}")
+            logger.error("Kimi billing issue detected: %s", message)
+            return RuntimeError(f"Kimi billing issue: {message}")
         return exc
+
+    def _extract_kimi_text(self, data: Dict[str, Any]) -> str:
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message", {})
+            text = message.get("content")
+            if isinstance(text, str):
+                return text.strip()
+            if isinstance(text, dict):
+                parts = text.get("parts")
+                if isinstance(parts, list) and parts:
+                    return str(parts[0]).strip()
+
+        if isinstance(data.get("text"), str):
+            return data["text"].strip()
+
+        raise ValueError("Kimi response missing text")
 
     def _extract_claude_text(self, response: Any) -> str:
         if response.content and len(response.content) > 0:
             return response.content[0].text.strip()
         raise ValueError("Claude response missing content")
-
-    def _extract_gemini_text(self, data: Dict[str, Any]) -> str:
-        for candidate in data.get("candidates", []):
-            for content in candidate.get("content", []):
-                if isinstance(content, dict):
-                    text = content.get("text")
-                    if text:
-                        return text.strip()
-        raise ValueError("Gemini response missing text")
