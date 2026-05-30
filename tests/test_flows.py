@@ -730,6 +730,27 @@ class TestDiscordReportFields:
         assert values["Pushed by"] == "bob"
         assert "patch login bug" in values["Commit"]
 
+    def test_evaluation_is_merged_into_single_report(self):
+        from integrations.discord import _build_embed
+        from claude.analyzer import TestPlan
+        from claude.evaluator import ProductEvaluation
+        from testing.result_parser import TestResult
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/api", branch="main", author="bob",
+            commit_messages=["x"], changed_files=[], diff_summary="d",
+        )
+        evaluation = ProductEvaluation(
+            quality_score=88, grade="B", summary="Users can log in but reset is risky.",
+            strengths=["Login works"], risks=["Password reset may fail"], recommendation="ship with caution",
+        )
+        embed = _build_embed("r1", event, TestPlan(reasoning="r"), TestResult(), "", evaluation)
+        names = {f["name"] for f in embed["fields"]}
+        # Evaluation lives inside the single report embed (no separate embed)
+        assert "📊 Product Quality" in names
+        assert "Assessment" in names
+
 
 class TestProductEvaluationReadsCode:
     """The product evaluation prompt is grounded in the README and changed code."""

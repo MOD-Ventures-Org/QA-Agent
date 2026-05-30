@@ -27,6 +27,7 @@ def _build_embed(
     test_plan: TestPlan,
     result: TestResult,
     bug_summary: str,
+    evaluation=None,
 ) -> dict:
     if result.failed == 0 and result.errors == 0:
         color = COLOR_GREEN
@@ -70,6 +71,20 @@ def _build_embed(
     if bug_summary:
         fields.append({"name": "Bug Summary", "value": bug_summary[:300], "inline": False})
 
+    if evaluation is not None:
+        rec_emoji = RECOMMENDATION_EMOJI.get(evaluation.recommendation, "❓")
+        strengths = "\n".join(f"• {s}" for s in evaluation.strengths[:4]) or "N/A"
+        risks = "\n".join(f"• {r}" for r in evaluation.risks[:4]) or "N/A"
+        fields.append({
+            "name": "📊 Product Quality",
+            "value": f"**{evaluation.grade}** — {evaluation.quality_score}/100  ·  {rec_emoji} {evaluation.recommendation.title()}",
+            "inline": False,
+        })
+        if evaluation.summary:
+            fields.append({"name": "Assessment", "value": evaluation.summary[:400], "inline": False})
+        fields.append({"name": "✅ Strengths", "value": strengths, "inline": True})
+        fields.append({"name": "⚠️ Risks", "value": risks, "inline": True})
+
     return {
         "title": f"ARIA Report — {event.repo_name} [{event.branch}] #{run_id}",
         "color": color,
@@ -77,26 +92,6 @@ def _build_embed(
         "footer": {
             "text": f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} · ARIA powered by Claude + Playwright"
         },
-    }
-
-
-def _build_evaluation_embed(evaluation) -> dict:
-    color = GRADE_COLOR.get(evaluation.grade, COLOR_AMBER)
-    rec_emoji = RECOMMENDATION_EMOJI.get(evaluation.recommendation, "❓")
-
-    strengths = "\n".join(f"• {s}" for s in evaluation.strengths[:4]) or "N/A"
-    risks = "\n".join(f"• {r}" for r in evaluation.risks[:4]) or "N/A"
-
-    return {
-        "title": "📊 Product Evaluation",
-        "color": color,
-        "fields": [
-            {"name": "Grade", "value": f"**{evaluation.grade}** — {evaluation.quality_score}/100", "inline": True},
-            {"name": "Recommendation", "value": f"{rec_emoji} {evaluation.recommendation.title()}", "inline": True},
-            {"name": "Summary", "value": evaluation.summary[:300] or "N/A", "inline": False},
-            {"name": "✅ Strengths", "value": strengths, "inline": True},
-            {"name": "⚠️ Risks", "value": risks, "inline": True},
-        ],
     }
 
 
@@ -150,14 +145,12 @@ async def post_discord_report(
         logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord post")
         return ""
 
-    embed = _build_embed(run_id, event, test_plan, result, bug_summary)
+    embed = _build_embed(run_id, event, test_plan, result, bug_summary, evaluation)
     embeds = [embed]
     if generated_tests is not None:
         embeds.append(_build_generated_tests_embed(generated_tests))
     if manual_plan is not None and getattr(manual_plan, "cases", None):
         embeds.append(_build_manual_tests_embed(manual_plan))
-    if evaluation is not None:
-        embeds.append(_build_evaluation_embed(evaluation))
 
     return await _post_embeds(embeds)
 
