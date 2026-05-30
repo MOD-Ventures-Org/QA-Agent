@@ -67,36 +67,6 @@ jobs:
           path: /tmp/aria_screenshots/
           if-no-files-found: ignore
 
-      - name: Post results to Discord
-        if: always()
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          python - <<'EOF'
-          import json, os, httpx
-          webhook = os.environ.get("DISCORD_WEBHOOK_URL", "")
-          if not webhook:
-              print("No Discord webhook — skipping")
-              exit(0)
-          try:
-              with open("report.json") as f:
-                  data = json.load(f)
-              summary = data.get("summary", {})
-              passed = summary.get("passed", 0)
-              failed = summary.get("failed", 0)
-              total = summary.get("total", 0)
-              color = 0x27500A if failed == 0 else 0xA32D2D
-              embed = {
-                  "title": f"ARIA CI Report — {os.environ.get('GITHUB_REPOSITORY', 'repo')}",
-                  "color": color,
-                  "fields": [
-                      {"name": "Passed", "value": str(passed), "inline": True},
-                      {"name": "Failed", "value": str(failed), "inline": True},
-                      {"name": "Total", "value": str(total), "inline": True},
-                  ],
-                  "footer": {"text": "ARIA powered by Claude + Playwright"},
-              }
-              httpx.post(webhook, json={"embeds": [embed]})
-          except Exception as e:
-              print(f"Discord post failed: {e}")
-          EOF
+      # Discord reporting is handled by the ARIA agent (webhook pipeline), which
+      # posts the full "ARIA Report". The CI workflow no longer posts a separate
+      # "ARIA CI Report" to avoid duplicate messages.
