@@ -1077,6 +1077,39 @@ class TestPipelineSadFlow:
         passed_result = call_args.args[3]  # (run_id, event, test_plan, result, ...)
         assert passed_result.failed == 2
 
+    def test_errored_run_reports_to_discord_only(self):
+        # errors > 0 (tests couldn't run reliably): Discord report only —
+        # no MongoDB save and no ClickUp tickets.
+        from webhook.router import _run_pipeline
+        from testing.result_parser import TestResult
+
+        errored = TestResult(
+            total=1, passed=0, failed=0, errors=1,
+            failure_details=[{"name": "timeout", "error": "pytest timed out", "traceback": ""}],
+        )
+        with (
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
+            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
+            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=errored),
+            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=errored),
+            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value="error summary"),
+            patch("storage.mongo.save_test_run", new_callable=AsyncMock) as mock_save,
+            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock) as mock_save_manual,
+            patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_bug_ticket,
+            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="msg") as mock_report,
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
+
+        mock_report.assert_called_once()       # Discord report IS shown
+        mock_save.assert_not_called()          # NOT saved to MongoDB
+        mock_save_manual.assert_not_called()
+        mock_save_bug.assert_not_called()
+        mock_bug_ticket.assert_not_called()    # NO ClickUp tickets
+        mock_manual_ticket.assert_not_called()
+
 
 class TestPipelineAIUnavailable:
     """When the AI service is unreachable, the pipeline does nothing except post one alert."""

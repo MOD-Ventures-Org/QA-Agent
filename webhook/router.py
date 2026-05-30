@@ -170,6 +170,22 @@ async def _run_pipeline(event: GitHubPushEvent):
     else:
         logger.info("Product evaluation skipped — not a PR to main, merge to main, or release")
 
+    bug_summary = ""
+
+    # Errored run (tests could not run reliably). Report the failure to Discord
+    # only — do NOT save to MongoDB and do NOT create any ClickUp tickets.
+    if test_result.errors > 0:
+        logger.warning(
+            f"Errors detected (errors={test_result.errors}) on {event.repo_name} [{event.branch}] "
+            f"— Discord report only; skipping MongoDB save and ClickUp tickets"
+        )
+        bug_summary = await write_bug_report(test_plan, test_result)
+        discord_message_id = await post_discord_report(
+            "error", event, test_plan, test_result, bug_summary, evaluation, generated_tests, manual_plan
+        )
+        logger.info(f"Discord report posted message_id={discord_message_id}")
+        return
+
     run_id = await save_test_run(event, test_plan, test_result, evaluation)
     logger.info(f"Saved test run id={run_id}")
 
@@ -177,7 +193,6 @@ async def _run_pipeline(event: GitHubPushEvent):
     # only created when there are bugs (see below).
     await save_manual_tests(run_id, event, manual_plan)
 
-    bug_summary = ""
     clickup_ids = []
     if test_result.failed > 0:
         logger.warning(f"Tests failed: {test_result.failed} failure(s) on {event.repo_name} [{event.branch}]")

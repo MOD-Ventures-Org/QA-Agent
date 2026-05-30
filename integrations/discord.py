@@ -61,11 +61,12 @@ def _build_embed(
         {"name": "Reasoning", "value": test_plan.reasoning[:200], "inline": False},
         {"name": "✅ Passed", "value": str(result.passed), "inline": True},
         {"name": "❌ Failed", "value": str(result.failed), "inline": True},
+        {"name": "⚠️ Errors", "value": str(result.errors), "inline": True},
         {"name": "Total / Duration", "value": f"{result.total} / {result.duration:.1f}s", "inline": True},
     ]
 
-    if result.failed > 0:
-        fields.append({"name": "Failing Tests (first 5)", "value": failing_names, "inline": False})
+    if result.failed > 0 or result.errors > 0:
+        fields.append({"name": "Failing / Errored Tests (first 5)", "value": failing_names, "inline": False})
     if bug_summary:
         fields.append({"name": "Bug Summary", "value": bug_summary[:300], "inline": False})
 
