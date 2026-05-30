@@ -52,13 +52,14 @@ def _push_payload(
     }
 
 
-def _pr_payload(repo: str = "org/repo", branch: str = "feature/login", merged: bool = True, action: str = "closed") -> dict:
+def _pr_payload(repo: str = "org/repo", branch: str = "feature/login", merged: bool = True, action: str = "closed", base: str = "develop") -> dict:
     return {
         "repository": {"full_name": repo},
         "sender": {"login": "dev"},
         "action": action,
         "pull_request": {
             "head": {"ref": branch},
+            "base": {"ref": base},
             "title": "Add login feature",
             "merged": merged,
         },
@@ -209,8 +210,13 @@ class TestWebhookTriggerGate:
 
     def test_merged_pr_accepted(self, http_client, webhook_secret):
         with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
-            r = _post_webhook(http_client, _pr_payload(merged=True), "pull_request", webhook_secret)
+            r = _post_webhook(http_client, _pr_payload(merged=True, base="develop"), "pull_request", webhook_secret)
         assert r.json()["status"] == "accepted"
+
+    def test_merged_pr_into_main_skipped_to_avoid_duplicate(self, http_client, webhook_secret):
+        # Merging into main also fires a push-to-main event; process that one only.
+        r = _post_webhook(http_client, _pr_payload(merged=True, base="main"), "pull_request", webhook_secret)
+        assert r.json()["status"] == "skipped"
 
     def test_deployment_event_accepted(self, http_client, webhook_secret):
         payload = {

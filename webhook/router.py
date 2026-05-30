@@ -60,10 +60,12 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
 
     pr_title = None
     merged = None
+    base_branch = None
     if event_type in ("pull_request", "pull_request_review"):
         pull_request = payload.get("pull_request", {})
         pr_title = pull_request.get("title")
         merged = bool(pull_request.get("merged"))
+        base_branch = pull_request.get("base", {}).get("ref")
 
     action = payload.get("action")
 
@@ -82,6 +84,7 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
         pr_title=pr_title,
         action=action,
         merged=merged,
+        base_branch=base_branch,
     )
 
 
@@ -105,7 +108,9 @@ def _should_process_event(event: GitHubPushEvent) -> bool:
     if event.event_type in DEPLOY_EVENTS:
         return True
     if event.event_type in ("pull_request", "pull_request_review"):
-        return bool(event.merged)
+        # A merge into main/master also arrives as a push event (which carries the
+        # commits/diff), so process that one instead — avoids duplicate reports.
+        return bool(event.merged) and event.base_branch not in MAIN_BRANCHES
     if event.event_type == "push":
         return event.branch in MAIN_BRANCHES
     return False

@@ -13,6 +13,7 @@ class GitHubPushEvent(BaseModel):
     pr_title: Optional[str] = None
     action: Optional[str] = None
     merged: Optional[bool] = None
+    base_branch: Optional[str] = None
 
 
 class WebhookPayload(BaseModel):
