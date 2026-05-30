@@ -176,18 +176,27 @@ Keep it under 400 words."""
 
 
 EVALUATOR_SYSTEM = """You are a product quality advisor reporting to a business owner, not a developer.
-Your job is to assess whether the product is ready to ship to real customers based on test results.
-Translate technical test outcomes into plain business language — focus on user experience and business impact.
-Never mention test names, tracebacks, or technical jargon.
+Assess whether the product is ready to ship to real customers. Base your judgment on BOTH:
+(1) what the product actually does — read the README and the changed code to understand the feature,
+    its purpose, and who it serves; and
+(2) the automated test results for this change.
+Translate everything into plain business language — focus on user experience and business impact.
+Never mention test names, tracebacks, file names, or technical jargon.
 Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 
 
-def evaluator_user_prompt(event, test_plan, test_result) -> str:
+def evaluator_user_prompt(event, test_plan, test_result, repo_context=None) -> str:
     pass_rate = (test_result.passed / max(test_result.total, 1)) * 100
     failure_text = "\n".join(
         f"  - {f['name']}: {f['error'][:120]}"
         for f in (test_result.failure_details or [])[:8]
     ) or "  (none)"
+
+    readme = getattr(repo_context, "readme", "") if repo_context else ""
+    readme_section = f"\n\n## Product README (what the product is and does)\n{readme}" if readme else ""
+    code_section = ""
+    if repo_context and getattr(repo_context, "changed_file_contents", None):
+        code_section = f"\n\n## Code changed in this release\n{_changed_files_section(repo_context)}"
 
     return f"""Release context: {event.event_type} on {event.repo_name} by {event.author}
 PR title: {event.pr_title or 'N/A'}
@@ -199,8 +208,9 @@ Test outcome summary:
   Errors: {test_result.errors}
 
 Broken areas (internal reference only — translate to user impact in your response):
-{failure_text}
+{failure_text}{readme_section}{code_section}
 
+Assess the product using the README and changed code together with the test outcome.
 Return exactly this JSON shape:
 {{
   "quality_score": <integer 0-100>,

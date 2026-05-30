@@ -725,6 +725,45 @@ class TestDiscordReportFields:
         assert "patch login bug" in values["Commit"]
 
 
+class TestProductEvaluationReadsCode:
+    """The product evaluation prompt is grounded in the README and changed code."""
+
+    def test_evaluator_prompt_includes_readme_and_code(self):
+        from claude.prompts import evaluator_user_prompt
+        from claude.analyzer import TestPlan
+        from claude.repo_context import RepoContext
+        from testing.result_parser import TestResult
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/app", branch="main", author="dev",
+            commit_messages=["feat: KYC"], changed_files=["src/pay.py"], diff_summary="d",
+        )
+        ctx = RepoContext(
+            repo_type="backend",
+            readme="This app processes KYC payments for customers.",
+            changed_file_contents={"src/pay.py": "def charge(card):\n    return True"},
+        )
+        prompt = evaluator_user_prompt(event, TestPlan(), TestResult(total=1, passed=1), ctx)
+
+        assert "KYC payments" in prompt
+        assert "src/pay.py" in prompt
+        assert "def charge" in prompt
+
+    def test_evaluator_prompt_without_context_still_works(self):
+        from claude.prompts import evaluator_user_prompt
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/app", branch="main", author="dev",
+            commit_messages=[], changed_files=[], diff_summary="d",
+        )
+        prompt = evaluator_user_prompt(event, TestPlan(), TestResult(total=1, passed=1))
+        assert "Return exactly this JSON shape" in prompt
+
+
 class TestLoadSuiteHelpers:
     """The load suite's percentile helper behaves correctly."""
 

@@ -165,7 +165,7 @@ async def _run_pipeline(event: GitHubPushEvent):
 
     evaluation = None
     if _should_run_evaluation(event):
-        evaluation = await evaluate_product(event, test_plan, test_result)
+        evaluation = await evaluate_product(event, test_plan, test_result, repo_context)
         logger.info(f"Product evaluation grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}")
     else:
         logger.info("Product evaluation skipped — not a PR to main, merge to main, or release")

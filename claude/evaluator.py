@@ -39,14 +39,14 @@ def _fallback_evaluation(test_result, reason: str) -> ProductEvaluation:
     )
 
 
-async def evaluate_product(event, test_plan, test_result) -> ProductEvaluation:
+async def evaluate_product(event, test_plan, test_result, repo_context=None) -> ProductEvaluation:
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1024,
             temperature=0,
             system=EVALUATOR_SYSTEM,
-            messages=[{"role": "user", "content": evaluator_user_prompt(event, test_plan, test_result)}],
+            messages=[{"role": "user", "content": evaluator_user_prompt(event, test_plan, test_result, repo_context)}],
         )
         raw = message.content[0].text.strip()
         data = json.loads(raw)
