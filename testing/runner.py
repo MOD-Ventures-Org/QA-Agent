@@ -23,7 +23,22 @@ SUITE_MAP = {
     "run_functional_integration": str(SUITES_DIR / "functional" / "test_integration.py"),
     "run_functional_edge_cases": str(SUITES_DIR / "functional" / "test_edge_cases.py"),
     "run_accessibility": str(SUITES_DIR / "accessibility" / "test_axe.py"),
+    "run_load_tests": str(SUITES_DIR / "load" / "test_load.py"),
 }
+
+
+def _build_pytest_cmd(paths: list, report_file: Path, keyword: str = "") -> list:
+    cmd = [
+        sys.executable, "-m", "pytest",
+        *paths,
+        "--json-report",
+        f"--json-report-file={report_file}",
+        "-v",
+        "--timeout=300",
+    ]
+    if keyword:
+        cmd += ["-k", keyword]
+    return cmd
 
 
 async def run_tests(test_plan: TestPlan) -> TestResult:
@@ -50,14 +65,10 @@ async def run_tests(test_plan: TestPlan) -> TestResult:
     report_file = Path(tempfile.gettempdir()) / f"aria_report_{uuid4().hex}.json"
     report_file.unlink(missing_ok=True)
 
-    cmd = [
-        sys.executable, "-m", "pytest",
-        *paths,
-        "--json-report",
-        f"--json-report-file={report_file}",
-        "-v",
-        "--timeout=300",
-    ]
+    keyword = getattr(test_plan, "pytest_keyword", "") or ""
+    if keyword:
+        logger.info("Narrowing run with pytest keyword filter: -k %r", keyword)
+    cmd = _build_pytest_cmd(paths, report_file, keyword)
     logger.info(f"Running: {' '.join(cmd)}")
 
     try:

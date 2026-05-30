@@ -13,6 +13,8 @@ SUPPORTED_EVENTS = {
     "pull_request",
     "pull_request_review",
     "release",
+    "deployment",
+    "deployment_status",
     "workflow_run",
 }
 

@@ -11,6 +11,8 @@ class GitHubPushEvent(BaseModel):
     changed_files: List[str]
     diff_summary: str
     pr_title: Optional[str] = None
+    action: Optional[str] = None
+    merged: Optional[bool] = None
 
 
 class WebhookPayload(BaseModel):

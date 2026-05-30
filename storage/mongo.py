@@ -82,6 +82,30 @@ async def save_bug_report(
         logger.error(f"MongoDB save_bug_report failed: {e}")
 
 
+async def save_manual_tests(run_id: str, event: GitHubPushEvent, manual_plan) -> None:
+    cases = getattr(manual_plan, "cases", None) or []
+    if not cases:
+        return
+    doc = {
+        "run_id": run_id,
+        "repo": event.repo_name,
+        "branch": event.branch,
+        "event_type": event.event_type,
+        "author": event.author,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cases": [
+            {"title": c.title, "steps": list(c.steps), "expected": c.expected}
+            for c in cases
+        ],
+    }
+    try:
+        db = _get_db()
+        await db["manual_tests"].replace_one({"run_id": run_id}, doc, upsert=True)
+        logger.info(f"Saved {len(cases)} manual test case(s) for run {run_id}")
+    except Exception as e:
+        logger.error(f"MongoDB save_manual_tests failed: {e}")
+
+
 async def get_recent_runs(repo: str, branch: str, limit: int = 5) -> List[dict]:
     try:
         db = _get_db()

@@ -41,8 +41,13 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
     changed_files = list(dict.fromkeys(changed_files))
 
     pr_title = None
+    merged = None
     if event_type in ("pull_request", "pull_request_review"):
-        pr_title = payload.get("pull_request", {}).get("title")
+        pull_request = payload.get("pull_request", {})
+        pr_title = pull_request.get("title")
+        merged = bool(pull_request.get("merged"))
+
+    action = payload.get("action")
 
     diff_summary = (
         f"{len(commits)} commit(s) touching {len(changed_files)} file(s)"
@@ -57,6 +62,8 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
         changed_files=changed_files,
         diff_summary=diff_summary,
         pr_title=pr_title,
+        action=action,
+        merged=merged,
     )
 
 
@@ -70,8 +77,20 @@ def _should_run_evaluation(event: GitHubPushEvent) -> bool:
     return False
 
 
-def _should_ignore_event(event_type: str) -> bool:
-    return event_type == "workflow_run"
+DEPLOY_EVENTS = ("deployment", "deployment_status", "release")
+MAIN_BRANCHES = ("main", "master")
+
+
+def _should_process_event(event: GitHubPushEvent) -> bool:
+    """Run the QA pipeline only for merged code (PR merge into any branch, or a
+    push landing on main/master) and deployment/release events."""
+    if event.event_type in DEPLOY_EVENTS:
+        return True
+    if event.event_type in ("pull_request", "pull_request_review"):
+        return bool(event.merged)
+    if event.event_type == "push":
+        return event.branch in MAIN_BRANCHES
+    return False
 
 
 def _selected_suites(test_plan: TestPlan) -> list[str]:
@@ -83,30 +102,41 @@ def _selected_suites(test_plan: TestPlan) -> list[str]:
 
 
 async def _run_pipeline(event: GitHubPushEvent):
+    from config import settings
     from claude.analyzer import TestPlan, analyze_event
+    from claude.repo_context import build_repo_context
     from claude.test_generator import generate_tests
+    from claude.manual_tests import generate_manual_tests
     from claude.evaluator import evaluate_product
     from claude.report_writer import write_bug_report
-    from integrations.clickup import file_bug_tickets
+    from integrations.clickup import file_bug_tickets, file_manual_test_ticket
     from testing.runner import run_tests
     from testing.regression_watcher import check_regression
     from testing.result_parser import TestResult
-    from storage.mongo import save_bug_report, save_test_run
+    from storage.mongo import save_bug_report, save_manual_tests, save_test_run
     from integrations.discord import post_discord_report
 
     logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
 
-    test_plan = await analyze_event(event)
-    selected_suites = _selected_suites(test_plan)
-    logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
-    logger.info(f"Selected suites: {selected_suites}")
+    repo_context = build_repo_context(event, settings.github_token)
+    try:
+        test_plan = await analyze_event(event, repo_context)
+        selected_suites = _selected_suites(test_plan)
+        logger.info(f"Repo type={repo_context.repo_type} cloned={repo_context.cloned}")
+        logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
+        logger.info(f"Selected suites: {selected_suites} keyword={test_plan.pytest_keyword!r}")
 
-    generated_tests = None
-    if test_plan.run_generated_tests:
-        generated_tests = await generate_tests(event, test_plan)
+        generated_tests = None
+        if test_plan.run_generated_tests:
+            generated_tests = await generate_tests(event, test_plan, repo_context)
 
-    test_result = await run_tests(test_plan)
-    test_result = await check_regression(event, test_result)
+        # Plain-English manual test cases for a human QA engineer.
+        manual_plan = await generate_manual_tests(event, repo_context)
+
+        test_result = await run_tests(test_plan)
+        test_result = await check_regression(event, test_result)
+    finally:
+        repo_context.cleanup()
 
     evaluation = None
     if _should_run_evaluation(event):
@@ -117,6 +147,10 @@ async def _run_pipeline(event: GitHubPushEvent):
 
     run_id = await save_test_run(event, test_plan, test_result, evaluation)
     logger.info(f"Saved test run id={run_id}")
+
+    # Persist the manual test cases for human QA (history + Discord). Tickets are
+    # only created when there are bugs (see below).
+    await save_manual_tests(run_id, event, manual_plan)
 
     bug_summary = ""
     clickup_ids = []
@@ -129,7 +163,16 @@ async def _run_pipeline(event: GitHubPushEvent):
         clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
 
-    discord_message_id = await post_discord_report(run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests)
+        # Bugs found — also file a manual QA checklist ticket for the affected change.
+        manual_ticket_id = await file_manual_test_ticket(run_id, event, manual_plan)
+        if manual_ticket_id:
+            logger.info(f"Manual QA ticket filed: {manual_ticket_id}")
+    else:
+        logger.info("No failures — no ClickUp tickets created")
+
+    discord_message_id = await post_discord_report(
+        run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests, manual_plan
+    )
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 
@@ -178,9 +221,12 @@ async def github_webhook(
     event_type = request.headers.get("X-GitHub-Event", "push")
     payload = json.loads(body)
     event = _extract_event(event_type, payload)
-    if _should_ignore_event(event_type):
-        logger.info(f"Ignoring webhook event={event_type} repo={event.repo_name} branch={event.branch}")
-        return {"status": "ignored", "event": event_type}
+    if not _should_process_event(event):
+        logger.info(
+            f"Skipping event={event_type} repo={event.repo_name} branch={event.branch} "
+            f"merged={event.merged} — not a merge/main push or deployment"
+        )
+        return {"status": "skipped", "event": event_type}
 
     background_tasks.add_task(_run_pipeline_safe, event)
     logger.info(f"Webhook received event={event_type} repo={event.repo_name} branch={event.branch}")

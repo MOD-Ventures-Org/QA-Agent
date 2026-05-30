@@ -39,3 +39,12 @@ testing = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["claude", "integrations", "storage", "testing", "utils", "webhook"]
+
+[tool.pytest.ini_options]
+markers = [
+    "ui: UI / browser (Playwright) tests",
+    "api: API tests",
+    "functional: functional and integration tests",
+    "accessibility: accessibility (axe-core) tests",
+    "load: load / performance tests",
+]

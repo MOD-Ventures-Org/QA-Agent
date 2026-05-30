@@ -62,9 +62,12 @@ def _extract_test_names(code: str) -> List[str]:
     return re.findall(r"^def (test_\w+)", code, re.MULTILINE)
 
 
-async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan) -> Optional[GeneratedTestSummary]:
+async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_context=None) -> Optional[GeneratedTestSummary]:
     logger.info(f"Generating tests for {len(event.changed_files)} changed file(s)")
-    file_contents = _read_file_contents(event.changed_files)
+    # Prefer file contents from the cloned repo context; fall back to local disk.
+    file_contents = dict(getattr(repo_context, "changed_file_contents", None) or {})
+    if not file_contents:
+        file_contents = _read_file_contents(event.changed_files)
     product_context = _load_product_context()
 
     if product_context:

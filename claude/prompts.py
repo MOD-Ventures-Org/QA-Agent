@@ -1,29 +1,48 @@
 from webhook.models import GitHubPushEvent
 
 
-ANALYZER_SYSTEM = """You are a senior QA architect. Analyze the GitHub event context and return a JSON test plan.
-Decide which suites to run based on repo, event type, and file paths changed.
+ANALYZER_SYSTEM = """You are a senior QA architect deciding the MINIMAL set of test suites to run
+for a specific code change. You are given the repository's README, file tree, the list of changed
+files with their contents, who pushed, and the commit messages. Read them and run ONLY what the
+change actually requires — do not run suites unrelated to what changed.
 
-Decision rules:
-- If repo_name contains backend, api, or server -> enable API suites only.
-- If repo_name contains frontend, web, client, or ui -> enable UI suites, accessibility, and functional integration + edge case testing.
-- If event type is deployment or deployment_status -> run all suites to validate the current deployment.
-- *.tsx, *.jsx, *.css, *.html, src/components/** -> enable UI suites + accessibility
-- routes/**, controllers/**, api/**, *.py server files -> enable API suites
-- auth/**, middleware/** -> always enable run_api_auth=true and run_ui_critical_paths=true
-- docs/**, *.md only -> set all to false, priority=low
-- release event -> all true, priority=critical
-- PR to main or master -> all regression + critical paths, priority=high
-- New feature files detected (no corresponding test file) -> run_generated_tests=true
+Core principle: precision over coverage. If only one API endpoint changed, run the API endpoint
+suite (optionally narrowed with a pytest keyword) — not the whole battery. Empty/over-broad plans
+waste CI time, which is exactly what we want to avoid.
+
+Guidance:
+- Map the changed files to the affected behaviour using the README and file tree for context.
+- Enable a suite ONLY if the change plausibly affects what that suite covers.
+- Use "pytest_keyword" to narrow execution to the relevant tests (a pytest -k expression, e.g.
+  "login or auth"). Leave it "" to run the whole selected suite.
+- auth/**, middleware/**, login/session code -> include auth coverage.
+- docs/**, *.md, comments only -> set everything false, priority "low".
+- release event or PR to main/master -> be more thorough (regression + critical paths), priority "high".
+- New feature files with no matching test -> run_generated_tests=true.
+- Note: repo-type guardrails are enforced after you respond (a backend repo cannot run UI suites and
+  vice-versa), so focus on choosing the smallest correct set; don't worry about cross-type leakage.
 
 Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 
 
-def analyzer_user_prompt(event: GitHubPushEvent) -> str:
+def _changed_files_section(repo_context) -> str:
+    contents = getattr(repo_context, "changed_file_contents", None) or {}
+    if not contents:
+        return "(file contents unavailable — reason from paths/diff)"
+    return "\n\n".join(f"### {path}\n```\n{body}\n```" for path, body in contents.items())
+
+
+def analyzer_user_prompt(event: GitHubPushEvent, repo_context=None, repo_type: str = "unknown") -> str:
+    readme = getattr(repo_context, "readme", "") if repo_context else ""
+    file_tree = getattr(repo_context, "file_tree", "") if repo_context else ""
+
+    readme_section = f"\n\n## README (excerpt)\n{readme}" if readme else ""
+    tree_section = f"\n\n## File tree\n{file_tree}" if file_tree else ""
+
     return f"""Event type: {event.event_type}
-Repository: {event.repo_name}
+Repository: {event.repo_name} (detected type: {repo_type})
 Branch: {event.branch}
-Author: {event.author}
+Pushed by: {event.author}
 PR title: {event.pr_title or 'N/A'}
 Diff summary: {event.diff_summary}
 
@@ -31,11 +50,14 @@ Changed files:
 {chr(10).join(f'  - {f}' for f in event.changed_files) or '  (none)'}
 
 Commit messages:
-{chr(10).join(f'  - {m}' for m in event.commit_messages) or '  (none)'}
+{chr(10).join(f'  - {m}' for m in event.commit_messages) or '  (none)'}{readme_section}{tree_section}
+
+## Changed file contents
+{_changed_files_section(repo_context)}
 
 Return exactly this JSON shape:
 {{
-  "reasoning": "short explanation",
+  "reasoning": "why these suites, tied to what actually changed",
   "run_ui_smoke": bool,
   "run_ui_regression": bool,
   "run_ui_critical_paths": bool,
@@ -46,6 +68,8 @@ Return exactly this JSON shape:
   "run_functional_edge_cases": bool,
   "run_accessibility": bool,
   "run_generated_tests": bool,
+  "run_load_tests": bool,
+  "pytest_keyword": "pytest -k expression to narrow tests, or empty string",
   "priority": "critical" | "high" | "medium" | "low",
   "focus_areas": ["list of areas most at risk"],
   "affected_pages": ["list of page URLs/routes affected"]
@@ -77,8 +101,59 @@ Generate a complete pytest+Playwright test file covering the above changes.
 Name each test function clearly so it describes what user behaviour it verifies."""
 
 
-REPORT_WRITER_SYSTEM = """You are a senior QA engineer writing a plain-English bug report for developers.
-Be concise, precise, and actionable. Avoid jargon. Focus on impact and likely root cause."""
+REPORT_WRITER_SYSTEM = """You are a senior QA engineer writing a plain-English bug report for developers AND
+non-technical QA engineers. Use clear everyday language, avoid jargon and stack-trace speak, and write
+so anyone on the team can understand what broke. Be concise, precise, and actionable — focus on user
+impact and the likely root cause."""
+
+
+MANUAL_TESTS_SYSTEM = """You are a senior QA engineer writing MANUAL test cases in plain English so a human
+QA engineer (non-technical) can execute them by hand against the running product. Based on what changed in
+this push, write the specific scenarios a person should click through or check.
+
+Rules:
+- Plain, everyday language. No code, no test-function names, no jargon.
+- Each case has a short title, concrete numbered steps a human can follow, and a clear expected result.
+- Cover the happy path, an important edge case, and an error/invalid case where relevant.
+- Only cover what the change actually affects — keep it focused (3 to 7 cases).
+
+Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
+
+
+def manual_tests_user_prompt(event, repo_context=None) -> str:
+    changed = "\n".join(f"  - {f}" for f in event.changed_files) or "  (none)"
+    commits = "\n".join(f"  - {m}" for m in event.commit_messages) or "  (none)"
+    readme = getattr(repo_context, "readme", "") if repo_context else ""
+    contents = getattr(repo_context, "changed_file_contents", None) if repo_context else None
+    readme_section = f"\n\n## README (excerpt)\n{readme}" if readme else ""
+    files_section = ""
+    if contents:
+        files_section = "\n\n## Changed file contents\n" + "\n\n".join(
+            f"### {path}\n```\n{body}\n```" for path, body in contents.items()
+        )
+
+    return f"""Repository: {event.repo_name}
+Branch: {event.branch}
+Event: {event.event_type}
+Pushed by: {event.author}
+
+Changed files:
+{changed}
+
+Commit messages:
+{commits}{readme_section}{files_section}
+
+Write manual test cases a human QA engineer should run for this change.
+Return exactly this JSON shape:
+{{
+  "cases": [
+    {{
+      "title": "short scenario name in plain English",
+      "steps": ["step 1 a person performs", "step 2", "..."],
+      "expected": "what the person should see if it works correctly"
+    }}
+  ]
+}}"""
 
 
 def report_writer_user_prompt(test_plan_reasoning: str, failures: list) -> str:

@@ -52,13 +52,15 @@ def _push_payload(
     }
 
 
-def _pr_payload(repo: str = "org/repo", branch: str = "feature/login") -> dict:
+def _pr_payload(repo: str = "org/repo", branch: str = "feature/login", merged: bool = True, action: str = "closed") -> dict:
     return {
         "repository": {"full_name": repo},
         "sender": {"login": "dev"},
+        "action": action,
         "pull_request": {
             "head": {"ref": branch},
             "title": "Add login feature",
+            "merged": merged,
         },
         "commits": [],
     }
@@ -186,6 +188,43 @@ class TestWebhookSadFlow:
 
 
 # ---------------------------------------------------------------------------
+# SECTION 1b — Trigger gate (merge/main push + deployment only)
+# ---------------------------------------------------------------------------
+
+class TestWebhookTriggerGate:
+    """Pipeline runs only on merged PRs, pushes to main/master, and deploy/release."""
+
+    def test_push_to_feature_branch_skipped(self, http_client, webhook_secret):
+        r = _post_webhook(http_client, _push_payload(branch="feature/x"), "push", webhook_secret)
+        assert r.json()["status"] == "skipped"
+
+    def test_push_to_main_accepted(self, http_client, webhook_secret):
+        with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
+            r = _post_webhook(http_client, _push_payload(branch="main"), "push", webhook_secret)
+        assert r.json()["status"] == "accepted"
+
+    def test_unmerged_pr_skipped(self, http_client, webhook_secret):
+        r = _post_webhook(http_client, _pr_payload(merged=False), "pull_request", webhook_secret)
+        assert r.json()["status"] == "skipped"
+
+    def test_merged_pr_accepted(self, http_client, webhook_secret):
+        with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
+            r = _post_webhook(http_client, _pr_payload(merged=True), "pull_request", webhook_secret)
+        assert r.json()["status"] == "accepted"
+
+    def test_deployment_event_accepted(self, http_client, webhook_secret):
+        payload = {
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "dev"},
+            "deployment": {"ref": "main"},
+            "commits": [],
+        }
+        with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
+            r = _post_webhook(http_client, payload, "deployment", webhook_secret)
+        assert r.json()["status"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
 # SECTION 2 — AI Analyzer (claude/analyzer.py)
 # ---------------------------------------------------------------------------
 
@@ -300,10 +339,10 @@ class TestAnalyzerSadFlow:
             mock_client.messages.create.return_value = mock_response
             plan = asyncio.run(analyze_event(event))
 
-        # Must run everything rather than nothing
+        # Unknown repo type -> smoke fallback runs a minimal set, not everything
         assert plan.run_api_endpoints is True
         assert plan.run_ui_smoke is True
-        assert plan.priority == "high"
+        assert plan.priority == "medium"
 
     def test_fallback_when_ai_raises_exception(self):
         from claude.analyzer import analyze_event
@@ -340,6 +379,305 @@ class TestAnalyzerSadFlow:
             plan = asyncio.run(analyze_event(event))
 
         assert plan.run_api_endpoints is True
+
+
+# ---------------------------------------------------------------------------
+# SECTION 2b — Repo-type guardrails, minimal plans + load testing
+# ---------------------------------------------------------------------------
+
+class TestRepoGuardrails:
+    """Claude picks the minimal suites; guardrails enforce backend!=UI, frontend!=API/load."""
+
+    def _event(self, repo_name: str):
+        from webhook.models import GitHubPushEvent
+
+        return GitHubPushEvent(
+            event_type="push", repo_name=repo_name, branch="main", author="dev",
+            commit_messages=["chore: change"], changed_files=["src/thing.py"],
+            diff_summary="1 commit(s) touching 1 file(s)",
+        )
+
+    def _plan_json(self, **flags):
+        base = {
+            "reasoning": "test", "run_ui_smoke": False, "run_ui_regression": False,
+            "run_ui_critical_paths": False, "run_api_endpoints": False, "run_api_auth": False,
+            "run_api_contracts": False, "run_functional_integration": False,
+            "run_functional_edge_cases": False, "run_accessibility": False,
+            "run_generated_tests": False, "run_load_tests": False, "pytest_keyword": "",
+            "priority": "medium", "focus_areas": [], "affected_pages": [],
+        }
+        base.update(flags)
+        return json.dumps(base)
+
+    def _analyze(self, repo_name, ai_json):
+        from claude.analyzer import analyze_event
+        from claude.repo_context import RepoContext, detect_repo_type
+
+        resp = MagicMock()
+        resp.content = [SimpleNamespace(text=ai_json)]
+        ctx = RepoContext(repo_type=detect_repo_type(repo_name, []))
+        with patch("claude.analyzer.client") as mock_client:
+            mock_client.messages.create.return_value = resp
+            return asyncio.run(analyze_event(self._event(repo_name), ctx))
+
+    def test_backend_guardrail_disables_ui_keeps_api_load(self):
+        # Claude over-asks for UI on a backend repo — guardrail must strip it.
+        ai = self._plan_json(run_ui_smoke=True, run_accessibility=True,
+                             run_api_endpoints=True, run_load_tests=True)
+        plan = self._analyze("org/backend-service", ai)
+        assert plan.run_api_endpoints is True
+        assert plan.run_load_tests is True
+        assert plan.run_ui_smoke is False
+        assert plan.run_accessibility is False
+
+    def test_frontend_guardrail_disables_api_keeps_ui_functional(self):
+        ai = self._plan_json(run_ui_smoke=True, run_functional_integration=True,
+                            run_api_endpoints=True, run_load_tests=True)
+        plan = self._analyze("org/frontend-web", ai)
+        assert plan.run_ui_smoke is True
+        assert plan.run_functional_integration is True
+        assert plan.run_api_endpoints is False
+        assert plan.run_load_tests is False
+
+    def test_minimal_plan_is_respected(self):
+        # Only one suite requested -> only that one runs (no blanket expansion).
+        plan = self._analyze("org/backend", self._plan_json(run_api_endpoints=True))
+        selected = [f for f in vars(plan) if f.startswith("run_") and getattr(plan, f)]
+        assert selected == ["run_api_endpoints"]
+
+    def test_keyword_passthrough(self):
+        plan = self._analyze("org/backend", self._plan_json(run_api_endpoints=True, pytest_keyword="login or auth"))
+        assert plan.pytest_keyword == "login or auth"
+
+    def test_smoke_fallback_trimmed_for_backend(self):
+        from claude.analyzer import analyze_event
+        from claude.repo_context import RepoContext
+
+        with patch("claude.analyzer.client") as mock_client:
+            mock_client.messages.create.side_effect = RuntimeError("boom")
+            plan = asyncio.run(analyze_event(self._event("org/backend"), RepoContext(repo_type="backend")))
+
+        assert plan.run_api_endpoints is True   # smoke keeps api for backend
+        assert plan.run_ui_smoke is False       # guardrail strips ui smoke
+        assert plan.priority == "medium"
+
+    def test_deployment_event_includes_load(self):
+        from claude.analyzer import analyze_event
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="deployment", repo_name="org/anything", branch="main",
+            author="dev", commit_messages=[], changed_files=[], diff_summary="deploy",
+        )
+        plan = asyncio.run(analyze_event(event))
+        assert plan.run_load_tests is True
+
+    def test_suite_map_wires_load_suite(self):
+        from testing.runner import SUITE_MAP
+
+        assert "run_load_tests" in SUITE_MAP
+        assert SUITE_MAP["run_load_tests"].endswith("test_load.py")
+
+
+class TestRepoContext:
+    """Cloning context: repo-type detection, graceful degradation, cleanup."""
+
+    def test_detect_backend_by_name(self):
+        from claude.repo_context import detect_repo_type
+        assert detect_repo_type("org/backend-svc", []) == "backend"
+
+    def test_detect_frontend_by_file_signal(self):
+        from claude.repo_context import detect_repo_type
+        assert detect_repo_type("org/app", ["package.json"]) == "frontend"
+
+    def test_detect_unknown_when_ambiguous(self):
+        from claude.repo_context import detect_repo_type
+        assert detect_repo_type("org/app", ["README.md"]) == "unknown"
+
+    def test_cleanup_removes_temp_dir(self, tmp_path):
+        from claude.repo_context import RepoContext
+        d = tmp_path / "clone"
+        d.mkdir()
+        ctx = RepoContext(local_path=str(d), cloned=True)
+        ctx.cleanup()
+        assert not d.exists()
+        assert ctx.local_path is None
+
+    def test_build_degrades_when_clone_fails(self):
+        from claude import repo_context
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/backend", branch="main", author="dev",
+            commit_messages=[], changed_files=["api/x.py"], diff_summary="d",
+        )
+        with patch("claude.repo_context._clone", return_value=False):
+            ctx = repo_context.build_repo_context(event, github_token="")
+        assert ctx.cloned is False
+        assert ctx.repo_type == "backend"
+        assert ctx.local_path is None
+
+    def test_build_reads_cloned_repo(self):
+        from pathlib import Path
+        from claude import repo_context
+        from webhook.models import GitHubPushEvent
+
+        def fake_clone(repo_name, branch, token, dest):
+            root = Path(dest)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "README.md").write_text("# Hello world", encoding="utf-8")
+            (root / "package.json").write_text("{}", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "app.js").write_text("console.log(1)", encoding="utf-8")
+            return True
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/app", branch="main", author="dev",
+            commit_messages=[], changed_files=["src/app.js"], diff_summary="d",
+        )
+        with patch("claude.repo_context._clone", side_effect=fake_clone):
+            ctx = repo_context.build_repo_context(event, github_token="")
+        try:
+            assert ctx.cloned is True
+            assert "Hello world" in ctx.readme
+            assert "src/app.js" in ctx.file_tree
+            assert "src/app.js" in ctx.changed_file_contents
+            assert ctx.repo_type == "frontend"
+        finally:
+            ctx.cleanup()
+
+
+class TestRunnerKeyword:
+    """The runner threads a pytest -k expression through when the plan sets one."""
+
+    def test_cmd_without_keyword_has_no_k(self):
+        from pathlib import Path
+        from testing.runner import _build_pytest_cmd
+        cmd = _build_pytest_cmd(["a.py"], Path("r.json"), "")
+        assert "-k" not in cmd
+        assert "a.py" in cmd
+
+    def test_cmd_with_keyword_adds_k(self):
+        from pathlib import Path
+        from testing.runner import _build_pytest_cmd
+        cmd = _build_pytest_cmd(["a.py"], Path("r.json"), "login or auth")
+        assert "-k" in cmd
+        assert cmd[cmd.index("-k") + 1] == "login or auth"
+
+
+class TestManualTestCases:
+    """Plain-English manual test cases for human QA: generation + delivery."""
+
+    def _event(self):
+        from webhook.models import GitHubPushEvent
+        return GitHubPushEvent(
+            event_type="push", repo_name="org/app", branch="main", author="alice",
+            commit_messages=["feat: add password reset"], changed_files=["src/reset.py"],
+            diff_summary="d",
+        )
+
+    def test_generate_manual_tests_parses_cases(self):
+        from claude.manual_tests import generate_manual_tests
+
+        ai = json.dumps({"cases": [
+            {"title": "Reset with valid email", "steps": ["Open /reset", "Enter email", "Submit"],
+             "expected": "Reset email is sent"},
+            {"title": "Reset with unknown email", "steps": ["Open /reset", "Enter unknown email"],
+             "expected": "Friendly error shown"},
+        ]})
+        resp = MagicMock()
+        resp.content = [SimpleNamespace(text=ai)]
+        with patch("claude.manual_tests.client") as mock_client:
+            mock_client.messages.create.return_value = resp
+            plan = asyncio.run(generate_manual_tests(self._event()))
+
+        assert len(plan.cases) == 2
+        assert plan.cases[0].title == "Reset with valid email"
+        assert plan.cases[0].steps[0] == "Open /reset"
+        assert "sent" in plan.cases[0].expected
+
+    def test_generate_manual_tests_strips_code_fences(self):
+        from claude.manual_tests import generate_manual_tests
+
+        ai = '```json\n{"cases": [{"title": "T", "steps": ["s"], "expected": "e"}]}\n```'
+        resp = MagicMock()
+        resp.content = [SimpleNamespace(text=ai)]
+        with patch("claude.manual_tests.client") as mock_client:
+            mock_client.messages.create.return_value = resp
+            plan = asyncio.run(generate_manual_tests(self._event()))
+
+        assert len(plan.cases) == 1
+
+    def test_generate_manual_tests_empty_on_failure(self):
+        from claude.manual_tests import generate_manual_tests
+
+        with patch("claude.manual_tests.client") as mock_client:
+            mock_client.messages.create.side_effect = RuntimeError("boom")
+            plan = asyncio.run(generate_manual_tests(self._event()))
+
+        assert plan.cases == []
+
+    def test_discord_manual_embed_lists_cases(self):
+        from integrations.discord import _build_manual_tests_embed
+        from claude.manual_tests import ManualTestPlan, ManualTestCase
+
+        plan = ManualTestPlan(cases=[ManualTestCase(title="Login", steps=["go", "type"], expected="ok")])
+        embed = _build_manual_tests_embed(plan)
+        assert "Manual Test Cases" in embed["title"]
+        assert "Login" in embed["description"]
+
+    def test_clickup_manual_markdown_is_checklist(self):
+        from integrations.clickup import _manual_cases_markdown
+        from claude.manual_tests import ManualTestPlan, ManualTestCase
+
+        plan = ManualTestPlan(cases=[ManualTestCase(title="Login", steps=["go", "type"], expected="dashboard")])
+        md = _manual_cases_markdown(plan)
+        assert "- [ ]" in md
+        assert "Login" in md
+        assert "dashboard" in md
+
+
+class TestDiscordReportFields:
+    """The Discord report surfaces repo, branch, author, commit, and event."""
+
+    def test_embed_includes_push_context(self):
+        from integrations.discord import _build_embed
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/api", branch="main", author="bob",
+            commit_messages=["fix: patch login bug"], changed_files=["api/login.py"],
+            diff_summary="d",
+        )
+        embed = _build_embed("run123", event, TestPlan(reasoning="r"), TestResult(), "")
+        field_names = {f["name"] for f in embed["fields"]}
+        values = {f["name"]: f["value"] for f in embed["fields"]}
+        assert {"Repository", "Branch", "Event", "Pushed by", "Commit"} <= field_names
+        assert values["Repository"] == "org/api"
+        assert values["Pushed by"] == "bob"
+        assert "patch login bug" in values["Commit"]
+
+
+class TestLoadSuiteHelpers:
+    """The load suite's percentile helper behaves correctly."""
+
+    def test_percentile_midpoint(self):
+        from testing.suites.load.test_load import _percentile
+
+        assert _percentile([10, 20, 30, 40], 0.5) == 25.0
+
+    def test_percentile_p95_picks_top(self):
+        from testing.suites.load.test_load import _percentile
+
+        values = list(range(1, 101))  # 1..100
+        assert _percentile(values, 0.95) >= 95
+
+    def test_percentile_empty_is_zero(self):
+        from testing.suites.load.test_load import _percentile
+
+        assert _percentile([], 0.95) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +842,23 @@ def _evaluation():
     )
 
 
+def _dummy_repo_context():
+    from claude.repo_context import RepoContext
+    return RepoContext(repo_type="backend", cloned=False)
+
+
 class TestPipelineHappyFlow:
     """All tests pass — no bug report, no ClickUp tickets, Discord gets a green embed."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_repo_clone(self):
+        # Prevent the pipeline from attempting a real git clone or AI call during tests.
+        from claude.manual_tests import ManualTestPlan
+        with (
+            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
+            patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
+        ):
+            yield
 
     def test_pipeline_completes_when_all_tests_pass(self):
         from webhook.router import _run_pipeline
@@ -519,14 +872,17 @@ class TestPipelineHappyFlow:
             patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
             patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
             patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_clickup,
+            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
             patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="discord-msg-id"),
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
+            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock),
         ):
             asyncio.run(_run_pipeline(_make_event()))
 
-        # No failures → bug report and ClickUp must NOT be called
+        # No failures → bug report, bug ticket, and manual ticket must NOT be created
         mock_bug.assert_not_called()
         mock_clickup.assert_not_called()
+        mock_manual_ticket.assert_not_called()
 
     def test_pipeline_saves_run_to_mongo(self):
         from webhook.router import _run_pipeline
@@ -551,6 +907,15 @@ class TestPipelineHappyFlow:
 class TestPipelineSadFlow:
     """Failures in one stage must not crash the whole pipeline."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_repo_clone(self):
+        from claude.manual_tests import ManualTestPlan
+        with (
+            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
+            patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
+        ):
+            yield
+
     def test_creates_bug_report_and_clickup_when_tests_fail(self):
         # Regular failures should still generate a bug summary and ClickUp tickets, with Discord reporting the result.
         from webhook.router import _run_pipeline
@@ -564,13 +929,16 @@ class TestPipelineSadFlow:
             patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
             patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
             patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_cu,
+            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock, return_value="cu-manual") as mock_manual_ticket,
             patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
+            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock),
         ):
             asyncio.run(_run_pipeline(_make_event()))
 
         mock_bug.assert_called_once()
         mock_cu.assert_called_once()
+        mock_manual_ticket.assert_called_once()  # bugs present → manual ticket filed
         mock_discord.assert_called_once()
         mock_save_bug.assert_called_once()
 

@@ -60,3 +60,48 @@ async def file_bug_tickets(
                 logger.error(f"ClickUp ticket creation failed for {test_name}: {e}")
 
     return task_ids
+
+
+def _manual_cases_markdown(manual_plan) -> str:
+    lines = []
+    for i, case in enumerate(manual_plan.cases, start=1):
+        steps = "\n".join(f"    {n}. {s}" for n, s in enumerate(case.steps, start=1))
+        lines.append(f"- [ ] **{i}. {case.title}**\n{steps}\n    - *Expected:* {case.expected}")
+    return "\n".join(lines)
+
+
+async def file_manual_test_ticket(run_id: str, event: GitHubPushEvent, manual_plan) -> str:
+    """Create a single ClickUp task with the plain-English manual test checklist."""
+    if not getattr(manual_plan, "cases", None):
+        return ""
+    if not settings.clickup_enabled:
+        logger.info("ClickUp posting disabled — skipping manual test ticket")
+        return ""
+    if not settings.clickup_api_token or not settings.clickup_list_id:
+        logger.info("ClickUp credentials not set — skipping manual test ticket")
+        return ""
+
+    headers = {"Authorization": settings.clickup_api_token, "Content-Type": "application/json"}
+    url = f"{CLICKUP_API_BASE}/list/{settings.clickup_list_id}/task"
+    payload = {
+        "name": f"[ARIA] Manual QA — {event.repo_name}/{event.branch}",
+        "description": (
+            f"Plain-English manual test cases for a human QA engineer.\n\n"
+            f"**Repository:** {event.repo_name}\n"
+            f"**Branch:** {event.branch}\n"
+            f"**Pushed by:** {event.author}\n"
+            f"**Run ID:** {run_id}\n\n"
+            f"{_manual_cases_markdown(manual_plan)}"
+        ),
+        "tags": ["aria", "manual-qa", event.repo_name.split("/")[-1]],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            task_id = response.json().get("id", "")
+            logger.info(f"ClickUp manual QA ticket created: {task_id}")
+            return task_id
+    except Exception as e:
+        logger.error(f"ClickUp manual test ticket creation failed: {e}")
+        return ""
