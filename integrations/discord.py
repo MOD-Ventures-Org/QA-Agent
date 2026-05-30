@@ -62,7 +62,6 @@ def _build_embed(
         {"name": "✅ Passed", "value": str(result.passed), "inline": True},
         {"name": "❌ Failed", "value": str(result.failed), "inline": True},
         {"name": "Total / Duration", "value": f"{result.total} / {result.duration:.1f}s", "inline": True},
-        {"name": "Regression Detected", "value": "⚠️ Yes" if result.regression_detected else "No", "inline": True},
     ]
 
     if result.failed > 0:

@@ -84,6 +84,11 @@ def _is_deployment_event(event: GitHubPushEvent) -> bool:
     return event.event_type in DEPLOYMENT_EVENTS
 
 
+def _is_network_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(term in text for term in ("getaddrinfo", "connection", "timed out", "timeout", "network", "resolve", "11001"))
+
+
 def _apply_repo_guardrail(plan: TestPlan, repo_type: str) -> TestPlan:
     """Force-disable suites that don't belong to the repo type."""
     disabled = ()
@@ -129,4 +134,7 @@ async def analyze_event(event: GitHubPushEvent, repo_context: Optional[RepoConte
         return plan
     except Exception as e:
         logger.error(f"Claude analyzer failed: {e} — falling back to smoke suites")
-        return _apply_repo_guardrail(_smoke_plan(f"Analyzer failed ({e}); running minimal smoke set"), repo_type)
+        reason = "AI analysis unavailable — ran a minimal smoke check based on repo type."
+        if _is_network_error(e):
+            reason = "Could not reach the AI service (network) — ran a minimal smoke check."
+        return _apply_repo_guardrail(_smoke_plan(reason), repo_type)

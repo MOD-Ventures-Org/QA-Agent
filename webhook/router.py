@@ -15,7 +15,10 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
     repo_name = payload.get("repository", {}).get("full_name", "unknown/unknown")
     author = (
         payload.get("sender", {}).get("login")
-        or payload.get("pusher", {}).get("name", "unknown")
+        or payload.get("pusher", {}).get("name")
+        or payload.get("release", {}).get("author", {}).get("login")
+        or payload.get("deployment", {}).get("creator", {}).get("login")
+        or "unknown"
     )
 
     branch = ""
@@ -31,7 +34,22 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
         branch = payload.get("workflow_run", {}).get("head_branch", "")
 
     commits = payload.get("commits", [])
-    commit_messages = [c.get("message", "") for c in commits]
+    commit_messages = [c.get("message", "") for c in commits if c.get("message")]
+
+    # Deployment/release payloads carry no "commits" array — derive a commit label.
+    if not commit_messages:
+        head_message = (payload.get("head_commit") or {}).get("message")
+        if head_message:
+            commit_messages = [head_message]
+        elif event_type in ("deployment", "deployment_status"):
+            deployment = payload.get("deployment", {}) or payload.get("deployment_status", {}).get("deployment", {})
+            if deployment.get("description"):
+                commit_messages = [deployment["description"]]
+        elif event_type == "release":
+            release = payload.get("release", {})
+            label = release.get("name") or release.get("tag_name") or release.get("body")
+            if label:
+                commit_messages = [label]
 
     changed_files: list[str] = []
     for commit in commits:

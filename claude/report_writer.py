@@ -34,4 +34,13 @@ async def write_bug_report(test_plan: TestPlan, test_result) -> str:
         return message.content[0].text.strip()
     except Exception as e:
         logger.error(f"Report writer failed: {e}")
-        return f"Bug report generation failed: {e}"
+        # Plain-English fallback built from the failures themselves, so the report
+        # is still useful when the AI service is unreachable.
+        count = len(failures)
+        names = ", ".join(f.get("name", "a test") for f in failures[:5])
+        more = f" and {count - 5} more" if count > 5 else ""
+        return (
+            f"{count} automated test(s) failed: {names}{more}. "
+            f"A detailed AI-written summary could not be generated this run; "
+            f"please review the failing tests above."
+        )

@@ -224,6 +224,71 @@ class TestWebhookTriggerGate:
         assert r.json()["status"] == "accepted"
 
 
+class TestEventExtraction:
+    """Author, branch, and commit must populate for deployment/release payloads."""
+
+    def test_deployment_populates_author_branch_commit(self):
+        from webhook.router import _extract_event
+        payload = {
+            "repository": {"full_name": "org/api"},
+            "sender": {"login": "Haider-MOD"},
+            "deployment": {"ref": "Staging", "description": "Worked on the Bugs & KYC form."},
+        }
+        event = _extract_event("deployment", payload)
+        assert event.author == "Haider-MOD"
+        assert event.branch == "Staging"
+        assert event.commit_messages == ["Worked on the Bugs & KYC form."]
+
+    def test_push_uses_head_commit_when_no_commits(self):
+        from webhook.router import _extract_event
+        payload = {
+            "repository": {"full_name": "org/api"},
+            "ref": "refs/heads/main",
+            "sender": {"login": "dev"},
+            "head_commit": {"message": "fix: patch login"},
+        }
+        event = _extract_event("push", payload)
+        assert event.commit_messages == ["fix: patch login"]
+
+
+class TestGracefulFailures:
+    """When the AI service is unreachable, reports stay clean (no raw errno)."""
+
+    def test_analyzer_network_error_reasoning_is_clean(self):
+        from claude.analyzer import analyze_event
+        from claude.repo_context import RepoContext
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/repo", branch="main", author="d",
+            commit_messages=[], changed_files=[], diff_summary="d",
+        )
+        with patch("claude.analyzer.client") as mock_client:
+            mock_client.messages.create.side_effect = OSError("[Errno 11001] getaddrinfo failed")
+            plan = asyncio.run(analyze_event(event, RepoContext(repo_type="unknown")))
+
+        assert "getaddrinfo" not in plan.reasoning
+        assert "11001" not in plan.reasoning
+        assert "AI service" in plan.reasoning
+
+    def test_bug_summary_graceful_when_ai_unreachable(self):
+        from claude.report_writer import write_bug_report
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+
+        result = TestResult(total=2, passed=0, failed=2, failure_details=[
+            {"name": "api/test_auth.py::test_login", "error": "boom", "traceback": ""},
+            {"name": "api/test_auth.py::test_logout", "error": "boom", "traceback": ""},
+        ])
+        with patch("claude.report_writer.client") as mock_client:
+            mock_client.messages.create.side_effect = OSError("[Errno 11001] getaddrinfo failed")
+            summary = asyncio.run(write_bug_report(TestPlan(reasoning="r"), result))
+
+        assert "getaddrinfo" not in summary
+        assert "2 automated test" in summary
+        assert "test_login" in summary
+
+
 # ---------------------------------------------------------------------------
 # SECTION 2 — AI Analyzer (claude/analyzer.py)
 # ---------------------------------------------------------------------------
