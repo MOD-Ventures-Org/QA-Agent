@@ -35,8 +35,8 @@ class DualAIClient:
         self,
         anthropic_api_key: str = "",
         kimi_api_key: str = "",
-        kimi_model: str = "kimi-1.0",
-        kimi_api_url: str = "https://api.kimi.ai/v1/chat/completions",
+        kimi_model: str = "moonshot-v1-8k",
+        kimi_api_url: str = "https://api.moonshot.ai/v1/chat/completions",
     ):
         self.anthropic_client: Optional[Anthropic] = None
         if anthropic_api_key:
