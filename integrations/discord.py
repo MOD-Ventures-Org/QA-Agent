@@ -157,8 +157,40 @@ async def post_discord_report(
         embeds.append(_build_manual_tests_embed(manual_plan))
     if evaluation is not None:
         embeds.append(_build_evaluation_embed(evaluation))
-    payload = {"embeds": embeds}
 
+    return await _post_embeds(embeds)
+
+
+async def post_ai_unavailable_report(event: GitHubPushEvent, reason: str) -> str:
+    """Post a single concise alert when the AI service is unreachable. No test
+    results, bug summary, tickets, or test cases are produced for this run."""
+    if not settings.discord_enabled:
+        logger.info("Discord posting disabled — skipping AI-unavailable alert")
+        return ""
+    if not settings.discord_webhook_url:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping AI-unavailable alert")
+        return ""
+
+    latest_commit = (event.commit_messages[-1].splitlines()[0] if event.commit_messages else "N/A")
+    embed = {
+        "title": "⚠️ ARIA skipped — AI service unavailable",
+        "color": COLOR_AMBER,
+        "fields": [
+            {"name": "Repository", "value": event.repo_name, "inline": True},
+            {"name": "Branch", "value": event.branch or "N/A", "inline": True},
+            {"name": "Event", "value": event.event_type, "inline": True},
+            {"name": "Pushed by", "value": event.author or "unknown", "inline": True},
+            {"name": "Commit", "value": latest_commit[:200], "inline": False},
+            {"name": "Reason", "value": reason[:300], "inline": False},
+            {"name": "Result", "value": "No tests, summaries, tickets, or test cases were generated. Re-run once the AI service is reachable.", "inline": False},
+        ],
+        "footer": {"text": f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} · ARIA"},
+    }
+    return await _post_embeds([embed])
+
+
+async def _post_embeds(embeds: list) -> str:
+    payload = {"embeds": embeds}
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=10) as client:

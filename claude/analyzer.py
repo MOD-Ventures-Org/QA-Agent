@@ -1,4 +1,5 @@
 import json
+import socket
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -87,6 +88,19 @@ def _is_deployment_event(event: GitHubPushEvent) -> bool:
 def _is_network_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(term in text for term in ("getaddrinfo", "connection", "timed out", "timeout", "network", "resolve", "11001"))
+
+
+AI_HEALTHCHECK_HOST = "api.anthropic.com"
+
+
+def ai_reachable(host: str = AI_HEALTHCHECK_HOST) -> bool:
+    """Cheap DNS check that the AI provider host can be resolved. Catches the
+    offline / getaddrinfo case before we do any pipeline work."""
+    try:
+        socket.getaddrinfo(host, 443)
+        return True
+    except OSError:
+        return False
 
 
 def _apply_repo_guardrail(plan: TestPlan, repo_type: str) -> TestPlan:

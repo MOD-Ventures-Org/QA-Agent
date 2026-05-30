@@ -917,9 +917,11 @@ class TestPipelineHappyFlow:
 
     @pytest.fixture(autouse=True)
     def _stub_repo_clone(self):
-        # Prevent the pipeline from attempting a real git clone or AI call during tests.
+        # Prevent the pipeline from attempting a real git clone or AI call during tests,
+        # and treat the AI service as reachable.
         from claude.manual_tests import ManualTestPlan
         with (
+            patch("claude.analyzer.ai_reachable", return_value=True),
             patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
             patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
         ):
@@ -976,6 +978,7 @@ class TestPipelineSadFlow:
     def _stub_repo_clone(self):
         from claude.manual_tests import ManualTestPlan
         with (
+            patch("claude.analyzer.ai_reachable", return_value=True),
             patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
             patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
         ):
@@ -1073,6 +1076,35 @@ class TestPipelineSadFlow:
         call_args = mock_discord.call_args
         passed_result = call_args.args[3]  # (run_id, event, test_plan, result, ...)
         assert passed_result.failed == 2
+
+
+class TestPipelineAIUnavailable:
+    """When the AI service is unreachable, the pipeline does nothing except post one alert."""
+
+    def test_skips_all_work_and_posts_single_alert(self):
+        from webhook.router import _run_pipeline
+
+        with (
+            patch("claude.analyzer.ai_reachable", return_value=False),
+            patch("claude.repo_context.build_repo_context") as mock_clone,
+            patch("testing.runner.run_tests", new_callable=AsyncMock) as mock_run,
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_bug_ticket,
+            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
+            patch("storage.mongo.save_test_run", new_callable=AsyncMock) as mock_save,
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock) as mock_report,
+            patch("integrations.discord.post_ai_unavailable_report", new_callable=AsyncMock, return_value="alert-id") as mock_alert,
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
+
+        mock_alert.assert_called_once()        # one concise alert only
+        mock_clone.assert_not_called()         # no repo clone
+        mock_run.assert_not_called()           # no tests
+        mock_bug.assert_not_called()           # no bug summary
+        mock_bug_ticket.assert_not_called()    # no bug tickets
+        mock_manual_ticket.assert_not_called()  # no manual ticket
+        mock_save.assert_not_called()          # nothing saved
+        mock_report.assert_not_called()        # no full report
 
 
 # ---------------------------------------------------------------------------

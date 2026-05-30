@@ -121,7 +121,7 @@ def _selected_suites(test_plan: TestPlan) -> list[str]:
 
 async def _run_pipeline(event: GitHubPushEvent):
     from config import settings
-    from claude.analyzer import TestPlan, analyze_event
+    from claude.analyzer import TestPlan, analyze_event, ai_reachable
     from claude.repo_context import build_repo_context
     from claude.test_generator import generate_tests
     from claude.manual_tests import generate_manual_tests
@@ -132,9 +132,16 @@ async def _run_pipeline(event: GitHubPushEvent):
     from testing.regression_watcher import check_regression
     from testing.result_parser import TestResult
     from storage.mongo import save_bug_report, save_manual_tests, save_test_run
-    from integrations.discord import post_discord_report
+    from integrations.discord import post_discord_report, post_ai_unavailable_report
 
     logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
+
+    # If the AI service can't be reached, don't run anything or post a misleading
+    # report — send one concise alert and stop. No tests, tickets, or test cases.
+    if not ai_reachable():
+        logger.error(f"AI service unreachable — skipping pipeline for {event.repo_name} [{event.branch}]")
+        await post_ai_unavailable_report(event, "AI service could not be reached (network/DNS). No analysis was performed.")
+        return
 
     repo_context = build_repo_context(event, settings.github_token)
     try:
