@@ -127,6 +127,27 @@ def _build_manual_tests_embed(manual_plan) -> dict:
     }
 
 
+def _build_mongo_embed(run_id: str, result: TestResult, evaluation=None) -> dict:
+    if evaluation is not None:
+        quality_line = f"{evaluation.quality_score}/100 • {evaluation.grade} • {evaluation.recommendation.title()}"
+    else:
+        quality_line = "N/A"
+
+    return {
+        "title": "💾 MongoDB Report",
+        "color": 0x5865F2,
+        "fields": [
+            {"name": "Run ID", "value": run_id, "inline": True},
+            {"name": "Saved to MongoDB", "value": "Yes", "inline": True},
+            {"name": "Total tests", "value": str(result.total), "inline": True},
+            {"name": "Passed", "value": str(result.passed), "inline": True},
+            {"name": "Failed", "value": str(result.failed), "inline": True},
+            {"name": "Errors", "value": str(result.errors), "inline": True},
+            {"name": "Quality", "value": quality_line, "inline": False},
+        ],
+    }
+
+
 async def post_discord_report(
     run_id: str,
     event: GitHubPushEvent,
@@ -136,6 +157,7 @@ async def post_discord_report(
     evaluation=None,
     generated_tests=None,
     manual_plan=None,
+    mongo_persisted: bool = False,
 ) -> str:
     if not settings.discord_enabled:
         logger.info("Discord posting disabled by configuration — skipping Discord post")
@@ -151,6 +173,8 @@ async def post_discord_report(
         embeds.append(_build_generated_tests_embed(generated_tests))
     if manual_plan is not None and getattr(manual_plan, "cases", None):
         embeds.append(_build_manual_tests_embed(manual_plan))
+    if mongo_persisted and run_id:
+        embeds.append(_build_mongo_embed(run_id, result, evaluation))
 
     return await _post_embeds(embeds)
 

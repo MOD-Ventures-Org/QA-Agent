@@ -216,7 +216,15 @@ async def _run_pipeline(event: GitHubPushEvent):
         logger.info("No failures — no ClickUp tickets created")
 
     discord_message_id = await post_discord_report(
-        run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests, manual_plan
+        run_id,
+        event,
+        test_plan,
+        test_result,
+        bug_summary,
+        evaluation,
+        generated_tests,
+        manual_plan,
+        mongo_persisted=True,
     )
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
