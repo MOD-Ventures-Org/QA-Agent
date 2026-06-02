@@ -20,9 +20,20 @@ It uses a dual-provider AI client: **Anthropic Claude** is primary, with **Kimi*
 4. **Test generation** — Claude generates a fresh pytest test file targeting the specific change, using the right tooling for the test kind (Playwright `page` for UI, `httpx` `api_client` for API), covering happy path, edge cases, and error states.
 5. **Execution** — pytest runs the generated tests (honoring the `-k` filter) and captures a screenshot on any UI failure. If a change isn't worth testing, generation/execution are skipped but the report is still posted.
 6. **Manual test cases** — Claude writes plain-English, step-by-step manual test cases so a human QA engineer can verify the change by hand.
-7. **Persistence** — results, screenshots, and the manual test cases are stored in MongoDB.
-8. **Reporting** — Discord gets a rich embed showing **repository, branch, event, who pushed, commit message**, pass/fail counts, the bug summary, and the manual test cases.
+7. **Persistence** — every run is tracked step-by-step in MongoDB (the `runs` collection), alongside the test plan, generated tests, results, bug summary, tickets, manual cases, and product evaluation. Results and manual cases are also stored in their own collections.
+8. **Reporting** — the moment a run starts, Discord gets a **"🚀 ARIA run started — track progress: <link>"** ping linking to the live dashboard. On completion it gets the rich report (repository, branch, event, who pushed, commit, pass/fail counts, bug summary, manual cases) — also carrying the dashboard link.
 9. **Tickets (only when there are bugs)** — if any test fails, ARIA files a ClickUp ticket per failure **and** a manual-QA checklist ticket. On a clean run, **no tickets are created**.
+
+## Web Dashboard
+
+A built-in dashboard is served by the app at **`/ui`** (no separate build/deploy). The Discord start-ping links straight to a run's page, which **polls every ~2s** so you watch the pipeline live:
+
+- **Run list** (`/ui`) — recent runs with repo, branch, status, result, grade, and time.
+- **Run detail** (`/ui?run=<id>`) — a **step-by-step timeline** (AI check → clone → analyze → manual cases → generate → run → regression → evaluate → persist → tickets → report) with each step's status and output, plus the product evaluation, test results, bug summary, tickets (linked), generated test cases (with code), and manual test cases.
+
+The dashboard reads from a small JSON API: `GET /api/runs` and `GET /api/runs/{run_id}`.
+
+The links in Discord use the public base URL — the **ngrok tunnel** URL auto-detected at startup, or `PUBLIC_BASE_URL` if you set it (e.g. a deployed domain).
 
 ## Generated Tests
 
@@ -70,12 +81,14 @@ docker run -d -p 27017:27017 mongo:7
 python main.py
 ```
 
-ARIA starts on `http://localhost:8000` and opens an ngrok tunnel. Copy the tunnel URL shown in the terminal and paste it into your GitHub repository's webhook settings:
+ARIA starts on `http://localhost:8000`. If `NGROK_AUTHTOKEN` is set it opens an ngrok tunnel automatically and logs the public URL + the dashboard link (`<url>/ui`). Paste the tunnel URL into your GitHub repository's webhook settings:
 
 - **Payload URL:** `https://xxxx.ngrok.io/webhook/github`
 - **Content type:** `application/json`
 - **Secret:** value of `WEBHOOK_SECRET` in your `.env`
 - **Events:** Pushes, Pull requests, Deployments, Releases
+
+Open the dashboard at `http://localhost:8000/ui` (or `<tunnel>/ui`).
 
 ### 5. Verify
 
@@ -116,7 +129,8 @@ python -m pytest tests/ -v
 | `CLICKUP_ENABLED` | Toggle ClickUp ticket creation (default `False`) |
 | `CLICKUP_API_TOKEN` | ClickUp API token |
 | `CLICKUP_LIST_ID` | ClickUp list ID for tickets |
-| `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
+| `NGROK_AUTHTOKEN` | Ngrok auth token — when set, ARIA opens a tunnel at startup and uses its URL for dashboard links |
+| `PUBLIC_BASE_URL` | Overrides the dashboard/webhook base URL (e.g. a deployed domain). Takes precedence over ngrok |
 | `MONGODB_URI` | MongoDB connection string |
 | `MONGODB_DB_NAME` | MongoDB database name (default: `aria`) |
 | `BASE_URL_FRONTEND` | Frontend URL for generated Playwright UI tests |
@@ -142,18 +156,21 @@ The pipeline can run headlessly in CI. Add these secrets to your GitHub repo (`S
 
 ```
 QA-Agent/
-├── main.py                 # FastAPI app + ngrok startup
+├── main.py                 # FastAPI app: webhook + API + dashboard mount + ngrok startup
+├── runtime.py              # Public base URL resolution (PUBLIC_BASE_URL / ngrok / localhost)
 ├── config.py               # Settings from .env
 ├── requirements.txt
 ├── .env.example
-├── webhook/                # GitHub webhook receiver, signature validation, trigger gate
+├── webhook/                # GitHub webhook receiver, signature validation, instrumented pipeline
+├── api/                    # Read-only dashboard API (/api/runs, /api/runs/{id})
+├── frontend/               # Static dashboard (index.html, served at /ui)
 ├── claude/                 # AI: analyzer, repo_context (clone), test_generator,
 │                           #     manual_tests, report_writer, evaluator, client, prompts
 ├── testing/                # pytest runner + regression watcher
 │   └── suites/
 │       ├── conftest.py     # shared fixtures: page, base_url, api_client, api_base_url
 │       └── generated/      # Claude-generated, change-specific tests (auto-created)
-├── storage/                # MongoDB persistence
+├── storage/                # MongoDB persistence (runs lifecycle + results/bugs/manual)
 ├── integrations/           # Discord + ClickUp
 ├── tests/                  # ARIA's own unit tests
 └── utils/                  # Logging

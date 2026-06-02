@@ -116,7 +116,64 @@ def _should_process_event(event: GitHubPushEvent) -> bool:
     return False
 
 
+def _plan_dict(test_plan) -> dict:
+    return {
+        "should_test": test_plan.should_test,
+        "test_kind": test_plan.test_kind,
+        "priority": test_plan.priority,
+        "reasoning": test_plan.reasoning,
+        "focus_areas": list(test_plan.focus_areas),
+        "affected_pages": list(test_plan.affected_pages),
+    }
+
+
+def _result_dict(result) -> dict:
+    return {
+        "total": result.total,
+        "passed": result.passed,
+        "failed": result.failed,
+        "errors": result.errors,
+        "duration": result.duration,
+        "regression_detected": result.regression_detected,
+        "failure_details": result.failure_details,
+        "suite_results": result.suite_results,
+    }
+
+
+def _generated_dict(generated) -> dict:
+    if generated is None:
+        return None
+    return {
+        "file_name": generated.file_name,
+        "test_names": list(generated.test_names),
+        "triggered_by": list(generated.triggered_by),
+        "code": generated.code,
+    }
+
+
+def _manual_dict(manual_plan) -> list:
+    return [
+        {"title": c.title, "steps": list(c.steps), "expected": c.expected}
+        for c in (getattr(manual_plan, "cases", None) or [])
+    ]
+
+
+def _eval_dict(evaluation) -> dict:
+    if evaluation is None:
+        return None
+    return {
+        "quality_score": evaluation.quality_score,
+        "grade": evaluation.grade,
+        "recommendation": evaluation.recommendation,
+        "summary": evaluation.summary,
+        "strengths": list(evaluation.strengths),
+        "risks": list(evaluation.risks),
+    }
+
+
 async def _run_pipeline(event: GitHubPushEvent):
+    import uuid
+
     from config import settings
     from claude.analyzer import TestPlan, analyze_event, ai_reachable
     from claude.repo_context import build_repo_context
@@ -129,73 +186,129 @@ async def _run_pipeline(event: GitHubPushEvent):
     from testing.regression_watcher import check_regression
     from testing.result_parser import TestResult
     from storage.mongo import save_bug_report, save_manual_tests, save_test_run
-    from integrations.discord import post_discord_report, post_ai_unavailable_report
+    from storage import runs
+    from integrations.discord import post_discord_report, post_ai_unavailable_report, post_run_started
+    from runtime import run_link as build_run_link
 
-    logger.info(f"Pipeline started for {event.repo_name} [{event.branch}] event={event.event_type}")
+    run_id = str(uuid.uuid4())[:8]
+    link = build_run_link(run_id)
+    logger.info(f"Pipeline started run_id={run_id} for {event.repo_name} [{event.branch}] event={event.event_type}")
+
+    # Create the run record and ping Discord immediately so the dashboard link works
+    # while the pipeline is still running.
+    await runs.create_run(run_id, event)
+    await post_run_started(event, run_id, link)
 
     # If the AI service can't be reached, don't run anything or post a misleading
     # report — send one concise alert and stop. No tests, tickets, or test cases.
+    await runs.start_step(run_id, "ai_check")
     if not ai_reachable():
         logger.error(f"AI service unreachable — skipping pipeline for {event.repo_name} [{event.branch}]")
+        await runs.finish_step(run_id, "ai_check", status="failed", error="AI service could not be reached (network/DNS)")
+        await runs.patch_run(run_id, status="failed")
         await post_ai_unavailable_report(event, "AI service could not be reached (network/DNS). No analysis was performed.")
         return
+    await runs.finish_step(run_id, "ai_check", output="AI service reachable")
 
+    await runs.start_step(run_id, "clone")
     repo_context = build_repo_context(event, settings.github_token)
+    await runs.finish_step(run_id, "clone", output=f"type={repo_context.repo_type} cloned={repo_context.cloned}")
     try:
+        await runs.start_step(run_id, "analyze")
         test_plan = await analyze_event(event, repo_context)
+        await runs.patch_run(run_id, test_plan=_plan_dict(test_plan))
+        await runs.finish_step(
+            run_id, "analyze",
+            output=f"should_test={test_plan.should_test} test_kind={test_plan.test_kind} priority={test_plan.priority}",
+        )
         logger.info(f"Repo type={repo_context.repo_type} cloned={repo_context.cloned}")
-        logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
         logger.info(
             f"should_test={test_plan.should_test} test_kind={test_plan.test_kind} "
-            f"keyword={test_plan.pytest_keyword!r}"
+            f"priority={test_plan.priority} keyword={test_plan.pytest_keyword!r}"
         )
 
         # Plain-English manual test cases for a human QA engineer (always produced).
+        await runs.start_step(run_id, "manual_tests")
         manual_plan = await generate_manual_tests(event, repo_context)
+        await runs.patch_run(run_id, manual_tests=_manual_dict(manual_plan))
+        await runs.finish_step(run_id, "manual_tests", output=f"{len(_manual_dict(manual_plan))} case(s)")
 
         # Generate change-specific tests and run them only when the change is worth testing.
         generated_tests = None
         test_result = TestResult()
         if test_plan.should_test:
+            await runs.start_step(run_id, "generate")
             generated_tests = await generate_tests(event, test_plan, repo_context)
+            await runs.patch_run(run_id, generated_tests=_generated_dict(generated_tests))
+            gen_count = len(generated_tests.test_names) if generated_tests else 0
+            await runs.finish_step(run_id, "generate", output=f"{gen_count} test(s) generated")
+
+            await runs.start_step(run_id, "run_tests")
             test_result = await run_tests(test_plan)
+            await runs.patch_run(run_id, test_result=_result_dict(test_result))
+            await runs.finish_step(
+                run_id, "run_tests",
+                output=f"passed={test_result.passed} failed={test_result.failed} errors={test_result.errors} ({test_result.duration:.1f}s)",
+            )
+
+            await runs.start_step(run_id, "regression")
             test_result = await check_regression(event, test_result)
+            await runs.patch_run(run_id, test_result=_result_dict(test_result))
+            await runs.finish_step(run_id, "regression", output=f"regression_detected={test_result.regression_detected}")
         else:
             logger.info("Change not worth testing (should_test=false) — skipping generation/run")
+            for key in ("generate", "run_tests", "regression"):
+                await runs.finish_step(run_id, key, status="skipped", output="change not worth testing")
     finally:
         repo_context.cleanup()
 
     evaluation = None
+    await runs.start_step(run_id, "evaluate")
     if _should_run_evaluation(event):
         evaluation = await evaluate_product(event, test_plan, test_result, repo_context)
+        await runs.patch_run(run_id, evaluation=_eval_dict(evaluation))
+        await runs.finish_step(
+            run_id, "evaluate",
+            output=f"grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}",
+        )
         logger.info(f"Product evaluation grade={evaluation.grade} score={evaluation.quality_score} recommendation={evaluation.recommendation}")
     else:
+        await runs.finish_step(run_id, "evaluate", status="skipped", output="not a PR to main, merge to main, or release")
         logger.info("Product evaluation skipped — not a PR to main, merge to main, or release")
 
     bug_summary = ""
+    tickets: list = []
 
     # Errored run (tests could not run reliably). Report the failure to Discord
-    # only — do NOT save to MongoDB and do NOT create any ClickUp tickets.
+    # only — do NOT save to MongoDB (test_runs) and do NOT create any ClickUp tickets.
     if test_result.errors > 0:
         logger.warning(
             f"Errors detected (errors={test_result.errors}) on {event.repo_name} [{event.branch}] "
-            f"— Discord report only; skipping MongoDB save and ClickUp tickets"
+            f"— Discord report only; skipping test_runs save and ClickUp tickets"
         )
+        await runs.finish_step(run_id, "persist", status="skipped", output="errored run — not saved to test_runs")
         bug_summary = await write_bug_report(test_plan, test_result)
+        await runs.patch_run(run_id, bug_summary=bug_summary)
+        await runs.finish_step(run_id, "tickets", status="skipped", output="errored run — no tickets created")
+
+        await runs.start_step(run_id, "report")
         discord_message_id = await post_discord_report(
-            "error", event, test_plan, test_result, bug_summary, evaluation, generated_tests, manual_plan
+            run_id, event, test_plan, test_result, bug_summary, evaluation, generated_tests, manual_plan, run_link=link
         )
+        await runs.finish_step(run_id, "report", output="posted")
+        await runs.patch_run(run_id, status="failed", discord_message_id=discord_message_id)
         logger.info(f"Discord report posted message_id={discord_message_id}")
         return
 
-    run_id = await save_test_run(event, test_plan, test_result, evaluation)
-    logger.info(f"Saved test run id={run_id}")
-
+    await runs.start_step(run_id, "persist")
+    await save_test_run(event, test_plan, test_result, evaluation, run_id=run_id)
     # Persist the manual test cases for human QA (history + Discord). Tickets are
     # only created when there are bugs (see below).
     await save_manual_tests(run_id, event, manual_plan)
+    await runs.finish_step(run_id, "persist", output="saved to MongoDB")
+    logger.info(f"Saved test run id={run_id}")
 
-    clickup_ids = []
+    await runs.start_step(run_id, "tickets")
     if test_result.failed > 0:
         logger.warning(f"Tests failed: {test_result.failed} failure(s) on {event.repo_name} [{event.branch}]")
         for failure in (test_result.failure_details or []):
@@ -204,14 +317,20 @@ async def _run_pipeline(event: GitHubPushEvent):
         bug_summary = await write_bug_report(test_plan, test_result)
         clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
+        tickets = [{"id": tid, "url": f"https://app.clickup.com/t/{tid}"} for tid in (clickup_ids or [])]
 
         # Bugs found — also file a manual QA checklist ticket for the affected change.
         manual_ticket_id = await file_manual_test_ticket(run_id, event, manual_plan)
         if manual_ticket_id:
+            tickets.append({"id": manual_ticket_id, "url": f"https://app.clickup.com/t/{manual_ticket_id}", "kind": "manual"})
             logger.info(f"Manual QA ticket filed: {manual_ticket_id}")
+        await runs.patch_run(run_id, bug_summary=bug_summary, tickets=tickets)
+        await runs.finish_step(run_id, "tickets", output=f"{len(tickets)} ticket(s) filed")
     else:
         logger.info("No failures — no ClickUp tickets created")
+        await runs.finish_step(run_id, "tickets", status="skipped", output="no failures — no tickets")
 
+    await runs.start_step(run_id, "report")
     discord_message_id = await post_discord_report(
         run_id,
         event,
@@ -222,7 +341,10 @@ async def _run_pipeline(event: GitHubPushEvent):
         generated_tests,
         manual_plan,
         mongo_persisted=True,
+        run_link=link,
     )
+    await runs.finish_step(run_id, "report", output="posted")
+    await runs.patch_run(run_id, status="completed", discord_message_id=discord_message_id)
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 

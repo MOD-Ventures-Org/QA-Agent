@@ -23,8 +23,8 @@ def _get_db():
     return _client[settings.mongodb_db_name]
 
 
-async def save_test_run(event: GitHubPushEvent, test_plan: TestPlan, result: TestResult, evaluation=None) -> str:
-    run_id = str(uuid.uuid4())[:8]
+async def save_test_run(event: GitHubPushEvent, test_plan: TestPlan, result: TestResult, evaluation=None, run_id: Optional[str] = None) -> str:
+    run_id = run_id or str(uuid.uuid4())[:8]
     doc = TestRunDocument(
         run_id=run_id,
         repo=event.repo_name,

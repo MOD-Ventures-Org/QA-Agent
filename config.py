@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     clickup_list_id: str = Field("", env="CLICKUP_LIST_ID")
     mongodb_uri: str = Field("mongodb://localhost:27017", env="MONGODB_URI")
     mongodb_db_name: str = Field("aria", env="MONGODB_DB_NAME")
+    public_base_url: str = Field("", env="PUBLIC_BASE_URL")
     base_url_frontend: str = Field("http://localhost:3000", env="BASE_URL_FRONTEND")
     base_url_api: str = Field("http://localhost:8080", env="BASE_URL_API")
     playwright_headless: bool = Field(True, env="PLAYWRIGHT_HEADLESS")

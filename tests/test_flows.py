@@ -11,6 +11,7 @@ Run with:
 """
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -18,6 +19,20 @@ import os
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+@contextlib.contextmanager
+def _stub_run_tracking():
+    """Stub the run-lifecycle writes + the Discord start ping so pipeline tests
+    don't touch MongoDB or Discord."""
+    with (
+        patch("storage.runs.create_run", new_callable=AsyncMock),
+        patch("storage.runs.start_step", new_callable=AsyncMock),
+        patch("storage.runs.finish_step", new_callable=AsyncMock),
+        patch("storage.runs.patch_run", new_callable=AsyncMock),
+        patch("integrations.discord.post_run_started", new_callable=AsyncMock, return_value=""),
+    ):
+        yield
 
 import pytest
 from starlette.testclient import TestClient
@@ -925,12 +940,13 @@ class TestPipelineHappyFlow:
     @pytest.fixture(autouse=True)
     def _stub_repo_clone(self):
         # Prevent the pipeline from attempting a real git clone or AI call during tests,
-        # and treat the AI service as reachable.
+        # and treat the AI service as reachable. Run-tracking writes are stubbed too.
         from claude.manual_tests import ManualTestPlan
         with (
             patch("claude.analyzer.ai_reachable", return_value=True),
             patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
             patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
+            _stub_run_tracking(),
         ):
             yield
 
@@ -988,6 +1004,7 @@ class TestPipelineSadFlow:
             patch("claude.analyzer.ai_reachable", return_value=True),
             patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
             patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
+            _stub_run_tracking(),
         ):
             yield
 
@@ -1125,6 +1142,7 @@ class TestPipelineAIUnavailable:
         from webhook.router import _run_pipeline
 
         with (
+            _stub_run_tracking(),
             patch("claude.analyzer.ai_reachable", return_value=False),
             patch("claude.repo_context.build_repo_context") as mock_clone,
             patch("testing.runner.run_tests", new_callable=AsyncMock) as mock_run,
@@ -1218,3 +1236,149 @@ class TestDualAIClientSadFlow:
         wrapped = c._wrap_kimi_error(billing_exc)
 
         assert "billing" in str(wrapped).lower()
+
+
+# ---------------------------------------------------------------------------
+# SECTION 6 — Run lifecycle store (storage/runs.py)
+# ---------------------------------------------------------------------------
+
+class TestRunsStore:
+    """create → step transitions → patch → get/list, backed by an in-memory Mongo."""
+
+    def _db_patch(self):
+        from mongomock_motor import AsyncMongoMockClient
+        db = AsyncMongoMockClient()["aria_test"]
+        return patch("storage.runs._get_db", return_value=db)
+
+    def _event(self):
+        from webhook.models import GitHubPushEvent
+        return GitHubPushEvent(
+            event_type="push", repo_name="org/app", branch="main", author="dev",
+            commit_messages=["feat: x"], changed_files=["a.py"], diff_summary="d",
+        )
+
+    def test_create_seeds_steps_and_strips_id(self):
+        from storage import runs
+        with self._db_patch():
+            asyncio.run(runs.create_run("run123", self._event()))
+            doc = asyncio.run(runs.get_run("run123"))
+        assert doc["run_id"] == "run123"
+        assert doc["status"] == "running"
+        assert len(doc["steps"]) == 11
+        assert all(s["status"] == "pending" for s in doc["steps"])
+        assert "_id" not in doc
+
+    def test_step_transitions(self):
+        from storage import runs
+        with self._db_patch():
+            asyncio.run(runs.create_run("r2", self._event()))
+            asyncio.run(runs.start_step("r2", "analyze"))
+            asyncio.run(runs.finish_step("r2", "analyze", output="kind=api"))
+            doc = asyncio.run(runs.get_run("r2"))
+        step = next(s for s in doc["steps"] if s["key"] == "analyze")
+        assert step["status"] == "done"
+        assert step["output"] == "kind=api"
+        assert step["started_at"] and step["finished_at"]
+
+    def test_patch_and_list(self):
+        from storage import runs
+        with self._db_patch():
+            asyncio.run(runs.create_run("r3", self._event()))
+            asyncio.run(runs.patch_run("r3", status="completed", bug_summary="boom"))
+            doc = asyncio.run(runs.get_run("r3"))
+            listed = asyncio.run(runs.list_runs())
+        assert doc["status"] == "completed"
+        assert doc["bug_summary"] == "boom"
+        assert any(r["run_id"] == "r3" for r in listed)
+
+    def test_get_missing_returns_none(self):
+        from storage import runs
+        with self._db_patch():
+            assert asyncio.run(runs.get_run("nope")) is None
+
+
+# ---------------------------------------------------------------------------
+# SECTION 7 — Dashboard read API (api/router.py)
+# ---------------------------------------------------------------------------
+
+class TestDashboardAPI:
+    def _client(self):
+        from main import app
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_list_runs(self):
+        with patch("storage.runs.list_runs", new_callable=AsyncMock, return_value=[{"run_id": "a", "repo": "o/r"}]):
+            r = self._client().get("/api/runs")
+        assert r.status_code == 200
+        assert r.json()["runs"][0]["run_id"] == "a"
+
+    def test_get_run_found(self):
+        with patch("storage.runs.get_run", new_callable=AsyncMock, return_value={"run_id": "a", "status": "completed"}):
+            r = self._client().get("/api/runs/a")
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
+
+    def test_get_run_404(self):
+        with patch("storage.runs.get_run", new_callable=AsyncMock, return_value=None):
+            r = self._client().get("/api/runs/nope")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# SECTION 8 — Public URL + Discord start ping
+# ---------------------------------------------------------------------------
+
+class TestPublicUrlAndStartPing:
+    def test_run_link_precedence(self):
+        import runtime
+        from config import settings
+
+        old = settings.public_base_url
+        try:
+            settings.public_base_url = ""
+            runtime.set_ngrok_url("")
+            assert runtime.run_link("abc") == "http://localhost:8000/ui?run=abc"
+
+            runtime.set_ngrok_url("https://x.ngrok.io")
+            assert runtime.run_link("abc") == "https://x.ngrok.io/ui?run=abc"
+
+            settings.public_base_url = "https://prod.example.com/"
+            assert runtime.run_link("abc") == "https://prod.example.com/ui?run=abc"
+        finally:
+            settings.public_base_url = old
+            runtime.set_ngrok_url("")
+
+    def test_start_ping_skipped_when_discord_disabled(self):
+        from integrations import discord
+        with patch.object(discord.settings, "discord_enabled", False):
+            msg = asyncio.run(discord.post_run_started(_make_event(), "rid", "http://x/ui?run=rid"))
+        assert msg == ""
+
+    def test_start_ping_includes_link_when_enabled(self):
+        from integrations import discord
+
+        captured = {}
+
+        async def fake_post(embeds):
+            captured["embeds"] = embeds
+            return "mid"
+
+        with (
+            patch.object(discord.settings, "discord_enabled", True),
+            patch.object(discord.settings, "discord_webhook_url", "http://hook"),
+            patch("integrations.discord._post_embeds", side_effect=fake_post),
+        ):
+            msg = asyncio.run(discord.post_run_started(_make_event(), "rid", "http://x/ui?run=rid"))
+
+        assert msg == "mid"
+        assert "http://x/ui?run=rid" in json.dumps(captured["embeds"])
+
+
+class TestFinalReportLink:
+    def test_embed_carries_run_link(self):
+        from integrations.discord import _build_embed
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+
+        embed = _build_embed("r1", _make_event(), TestPlan(reasoning="r"), TestResult(), "", None, "http://x/ui?run=r1")
+        assert "http://x/ui?run=r1" in json.dumps(embed["fields"])

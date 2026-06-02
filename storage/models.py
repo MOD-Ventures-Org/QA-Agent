@@ -28,6 +28,40 @@ class TestRunDocument:
 
 
 @dataclass
+class RunStep:
+    key: str
+    label: str
+    status: str = "pending"   # pending | running | done | skipped | failed
+    output: str = ""
+    error: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+# Ordered pipeline steps the dashboard renders as a timeline.
+RUN_STEPS = [
+    ("ai_check", "AI reachability"),
+    ("clone", "Clone repo & read code"),
+    ("analyze", "Analyze change"),
+    ("manual_tests", "Generate manual test cases"),
+    ("generate", "Generate tests"),
+    ("run_tests", "Run tests"),
+    ("regression", "Regression check"),
+    ("evaluate", "Product evaluation"),
+    ("persist", "Save to MongoDB"),
+    ("tickets", "Bug summary & tickets"),
+    ("report", "Discord report"),
+]
+
+
+def default_steps() -> List[dict]:
+    return [RunStep(key=k, label=l).to_dict() for k, l in RUN_STEPS]
+
+
+@dataclass
 class BugReportDocument:
     run_id: str
     repo: str

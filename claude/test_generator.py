@@ -30,6 +30,7 @@ class GeneratedTestSummary:
     file_name: str
     test_names: List[str] = field(default_factory=list)
     triggered_by: List[str] = field(default_factory=list)
+    code: str = ""
 
 
 def _sanitize_name(name: str) -> str:
@@ -116,6 +117,7 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
             file_name=filename.name,
             test_names=test_names,
             triggered_by=event.changed_files[:5],
+            code=code,
         )
     except Exception as e:
         logger.error(f"Test generation failed: {e}")

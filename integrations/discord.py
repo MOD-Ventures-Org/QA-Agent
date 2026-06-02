@@ -28,6 +28,7 @@ def _build_embed(
     result: TestResult,
     bug_summary: str,
     evaluation=None,
+    run_link: str = "",
 ) -> dict:
     if result.failed == 0 and result.errors == 0:
         color = COLOR_GREEN
@@ -57,6 +58,8 @@ def _build_embed(
         {"name": "Total / Duration", "value": f"{result.total} / {result.duration:.1f}s", "inline": True},
     ]
 
+    if run_link:
+        fields.append({"name": "🔗 View full run", "value": f"[Open dashboard]({run_link})", "inline": False})
     if result.failed > 0 or result.errors > 0:
         fields.append({"name": "Failing / Errored Tests (first 5)", "value": failing_names, "inline": False})
     if bug_summary:
@@ -139,6 +142,32 @@ def _build_mongo_embed(run_id: str, result: TestResult, evaluation=None) -> dict
     }
 
 
+async def post_run_started(event: GitHubPushEvent, run_id: str, link: str) -> str:
+    """Fire-and-watch ping posted as soon as a pipeline starts, with a link to the
+    live dashboard so the run can be followed while it executes."""
+    if not settings.discord_enabled:
+        logger.info("Discord posting disabled — skipping run-started ping")
+        return ""
+    if not settings.discord_webhook_url:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping run-started ping")
+        return ""
+
+    latest_commit = (event.commit_messages[-1].splitlines()[0] if event.commit_messages else "N/A")
+    embed = {
+        "title": f"🚀 ARIA run started — {event.repo_name} [{event.branch}]",
+        "color": 0x5865F2,
+        "description": f"A QA run has started. Track each step live here:\n**[Open dashboard]({link})**",
+        "fields": [
+            {"name": "Event", "value": event.event_type, "inline": True},
+            {"name": "Pushed by", "value": event.author or "unknown", "inline": True},
+            {"name": "Run ID", "value": run_id, "inline": True},
+            {"name": "Commit", "value": latest_commit[:200], "inline": False},
+        ],
+        "footer": {"text": f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} · ARIA"},
+    }
+    return await _post_embeds([embed])
+
+
 async def post_discord_report(
     run_id: str,
     event: GitHubPushEvent,
@@ -149,6 +178,7 @@ async def post_discord_report(
     generated_tests=None,
     manual_plan=None,
     mongo_persisted: bool = False,
+    run_link: str = "",
 ) -> str:
     if not settings.discord_enabled:
         logger.info("Discord posting disabled by configuration — skipping Discord post")
@@ -158,7 +188,7 @@ async def post_discord_report(
         logger.warning("DISCORD_WEBHOOK_URL not set — skipping Discord post")
         return ""
 
-    embed = _build_embed(run_id, event, test_plan, result, bug_summary, evaluation)
+    embed = _build_embed(run_id, event, test_plan, result, bug_summary, evaluation, run_link)
     embeds = [embed]
     if generated_tests is not None:
         embeds.append(_build_generated_tests_embed(generated_tests))

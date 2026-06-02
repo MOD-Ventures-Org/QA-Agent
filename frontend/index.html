@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ARIA Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117; --panel: #181b24; --panel2: #1f2330; --border: #2a2f3d;
+      --text: #e6e8ee; --muted: #9aa3b2; --accent: #5865f2;
+      --green: #3ba55d; --red: #ed4245; --amber: #faa61a; --gray: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    header { padding: 18px 24px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 18px; margin: 0; }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 24px; }
+    .muted { color: var(--muted); }
+    .panel { background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+    .panel h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em;
+      color: var(--muted); margin: 0 0 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+    tr:hover td { background: var(--panel2); }
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 99px;
+      font-size: 12px; font-weight: 600; }
+    .b-running { background: #2b3358; color: #aeb8ff; }
+    .b-completed, .b-done { background: #14361f; color: #7ee2a0; }
+    .b-failed { background: #3a1b1d; color: #ff9ea0; }
+    .b-skipped, .b-pending { background: #25282f; color: var(--muted); }
+    .steps { list-style: none; margin: 0; padding: 0; }
+    .step { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--border); }
+    .step:last-child { border-bottom: none; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 5px; flex: none; }
+    .d-running { background: var(--accent); box-shadow: 0 0 0 4px #5865f233; }
+    .d-done { background: var(--green); }
+    .d-failed { background: var(--red); }
+    .d-skipped, .d-pending { background: var(--gray); }
+    .step .label { font-weight: 600; }
+    .step .out { color: var(--muted); font-size: 13px; }
+    .step .err { color: #ff9ea0; font-size: 13px; white-space: pre-wrap; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .stat { background: var(--panel2); border-radius: 8px; padding: 12px; text-align: center; }
+    .stat .n { font-size: 22px; font-weight: 700; }
+    .stat .l { color: var(--muted); font-size: 12px; }
+    pre { background: #0c0e14; border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; overflow: auto; font-size: 12.5px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .case { border-left: 3px solid var(--accent); padding: 4px 0 4px 12px; margin-bottom: 12px; }
+    .pill { font-size: 12px; color: var(--muted); }
+    details summary { cursor: pointer; color: var(--accent); }
+    .back { margin-bottom: 14px; display: inline-block; }
+    ul.clean { margin: 6px 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤖 ARIA</h1><span class="muted">Autonomous QA Dashboard</span>
+  </header>
+  <div id="root" class="wrap"></div>
+
+  <script type="module">
+    import { h, render } from "https://esm.sh/preact@10.23.2";
+    import { useState, useEffect } from "https://esm.sh/preact@10.23.2/hooks";
+    import htm from "https://esm.sh/htm@3.1.1";
+    const html = htm.bind(h);
+
+    const qs = new URLSearchParams(location.search);
+    const runId = qs.get("run");
+
+    async function getJSON(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    }
+
+    const Badge = ({ status }) => html`<span class=${"badge b-" + status}>${status}</span>`;
+
+    function RunList() {
+      const [runs, setRuns] = useState(null);
+      const [err, setErr] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        const load = () => getJSON("/api/runs?limit=50")
+          .then(d => alive && setRuns(d.runs)).catch(e => alive && setErr(String(e)));
+        load();
+        const t = setInterval(load, 5000);
+        return () => { alive = false; clearInterval(t); };
+      }, []);
+      if (err) return html`<div class="panel">Failed to load runs: ${err}</div>`;
+      if (!runs) return html`<div class="panel muted">Loading…</div>`;
+      if (!runs.length) return html`<div class="panel muted">No runs yet. Trigger a push/merge to your repo.</div>`;
+      return html`<div class="panel">
+        <h2>Recent runs</h2>
+        <table><thead><tr>
+          <th>Repo</th><th>Branch</th><th>Event</th><th>Status</th><th>Result</th><th>Grade</th><th>When</th>
+        </tr></thead><tbody>
+        ${runs.map(r => html`<tr key=${r.run_id}>
+          <td><a href=${"/ui?run=" + r.run_id}>${r.repo}</a></td>
+          <td>${r.branch || "—"}</td>
+          <td>${r.event_type}</td>
+          <td><${Badge} status=${r.status} /></td>
+          <td>${r.test_plan && r.test_plan.should_test
+              ? html`<span class="muted">${r.test_plan.test_kind}</span>` : html`<span class="muted">—</span>`}</td>
+          <td>${r.evaluation ? r.evaluation.grade : "—"}</td>
+          <td class="muted">${fmt(r.created_at)}</td>
+        </tr>`)}
+        </tbody></table>
+      </div>`;
+    }
+
+    function fmt(iso) {
+      if (!iso) return "";
+      try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    }
+
+    function Steps({ steps }) {
+      return html`<div class="panel"><h2>Pipeline steps</h2>
+        <ul class="steps">${(steps || []).map(s => html`<li class="step" key=${s.key}>
+          <div class=${"dot d-" + s.status}></div>
+          <div style="flex:1">
+            <div class="label">${s.label} <span class=${"badge b-" + s.status} style="margin-left:6px">${s.status}</span></div>
+            ${s.output ? html`<div class="out">${s.output}</div>` : null}
+            ${s.error ? html`<div class="err">${s.error}</div>` : null}
+          </div>
+        </li>`)}</ul></div>`;
+    }
+
+    function Results({ r }) {
+      const tr = r.test_result;
+      if (!tr) return null;
+      return html`<div class="panel"><h2>Test results</h2>
+        <div class="grid">
+          <div class="stat"><div class="n">${tr.total}</div><div class="l">Total</div></div>
+          <div class="stat"><div class="n" style="color:var(--green)">${tr.passed}</div><div class="l">Passed</div></div>
+          <div class="stat"><div class="n" style="color:var(--red)">${tr.failed}</div><div class="l">Failed</div></div>
+          <div class="stat"><div class="n" style="color:var(--amber)">${tr.errors}</div><div class="l">Errors</div></div>
+        </div>
+        ${(tr.failure_details && tr.failure_details.length) ? html`<div style="margin-top:12px">
+          <div class="muted" style="margin-bottom:6px">Failing tests</div>
+          ${tr.failure_details.map((f, i) => html`<div key=${i} class="case">
+            <code>${f.name}</code><div class="out">${f.error}</div></div>`)}
+        </div>` : null}
+      </div>`;
+    }
+
+    function Evaluation({ e }) {
+      if (!e) return null;
+      return html`<div class="panel"><h2>Product evaluation</h2>
+        <div style="font-size:16px;font-weight:700;margin-bottom:6px">
+          ${e.grade} · ${e.quality_score}/100 · ${e.recommendation}</div>
+        ${e.summary ? html`<p>${e.summary}</p>` : null}
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div><div class="muted">Strengths</div><ul class="clean">${(e.strengths||[]).map((s,i)=>html`<li key=${i}>${s}</li>`)}</ul></div>
+          <div><div class="muted">Risks</div><ul class="clean">${(e.risks||[]).map((s,i)=>html`<li key=${i}>${s}</li>`)}</ul></div>
+        </div>
+      </div>`;
+    }
+
+    function Tickets({ tickets }) {
+      if (!tickets || !tickets.length) return null;
+      return html`<div class="panel"><h2>Tickets</h2>
+        <ul class="clean">${tickets.map((t,i)=>html`<li key=${i}>
+          <a href=${t.url} target="_blank">${t.id}</a> ${t.kind ? html`<span class="pill">(${t.kind})</span>` : null}
+        </li>`)}</ul></div>`;
+    }
+
+    function Generated({ g }) {
+      if (!g) return null;
+      return html`<div class="panel"><h2>Generated test cases</h2>
+        <div class="muted">${g.file_name} — ${(g.test_names||[]).length} test(s)</div>
+        <ul class="clean">${(g.test_names||[]).map((n,i)=>html`<li key=${i}><code>${n}</code></li>`)}</ul>
+        ${g.code ? html`<details><summary>View generated code</summary><pre><code>${g.code}</code></pre></details>` : null}
+      </div>`;
+    }
+
+    function Manual({ cases }) {
+      if (!cases || !cases.length) return null;
+      return html`<div class="panel"><h2>Manual test cases (human QA)</h2>
+        ${cases.map((c,i)=>html`<div class="case" key=${i}>
+          <div style="font-weight:600">${i+1}. ${c.title}</div>
+          <ol class="clean">${(c.steps||[]).map((s,j)=>html`<li key=${j}>${s}</li>`)}</ol>
+          <div class="muted">Expected: ${c.expected}</div>
+        </div>`)}
+      </div>`;
+    }
+
+    function RunDetail({ id }) {
+      const [r, setR] = useState(null);
+      const [err, setErr] = useState(null);
+      useEffect(() => {
+        let alive = true, timer = null;
+        const load = () => getJSON("/api/runs/" + id).then(d => {
+          if (!alive) return;
+          setR(d);
+          if (d.status === "running") timer = setTimeout(load, 2000);
+        }).catch(e => alive && setErr(String(e)));
+        load();
+        return () => { alive = false; if (timer) clearTimeout(timer); };
+      }, [id]);
+      if (err) return html`<div><a class="back" href="/ui">← all runs</a>
+        <div class="panel">Run not found (${err}).</div></div>`;
+      if (!r) return html`<div class="panel muted">Loading run…</div>`;
+      return html`<div>
+        <a class="back" href="/ui">← all runs</a>
+        <div class="panel">
+          <h2>Run ${r.run_id}</h2>
+          <div style="font-size:16px;font-weight:600">${r.repo} <span class="muted">[${r.branch}]</span> <${Badge} status=${r.status} /></div>
+          <div class="muted">${r.event_type} · by ${r.author || "unknown"} · ${fmt(r.created_at)}</div>
+          ${r.commit ? html`<div class="muted">${r.commit}</div>` : null}
+          ${r.test_plan ? html`<div style="margin-top:8px" class="pill">Plan: should_test=${String(r.test_plan.should_test)} · kind=${r.test_plan.test_kind} · priority=${r.test_plan.priority}</div>` : null}
+          ${r.test_plan && r.test_plan.reasoning ? html`<p class="out">${r.test_plan.reasoning}</p>` : null}
+        </div>
+        <${Steps} steps=${r.steps} />
+        <${Evaluation} e=${r.evaluation} />
+        <${Results} r=${r} />
+        ${r.bug_summary ? html`<div class="panel"><h2>Bug summary</h2><p style="white-space:pre-wrap">${r.bug_summary}</p></div>` : null}
+        <${Tickets} tickets=${r.tickets} />
+        <${Generated} g=${r.generated_tests} />
+        <${Manual} cases=${r.manual_tests} />
+      </div>`;
+    }
+
+    render(runId ? html`<${RunDetail} id=${runId} />` : html`<${RunList} />`, document.getElementById("root"));
+  </script>
+</body>
+</html>
