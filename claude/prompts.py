@@ -1,26 +1,31 @@
 from webhook.models import GitHubPushEvent
 
 
-ANALYZER_SYSTEM = """You are a senior QA architect deciding the MINIMAL set of test suites to run
-for a specific code change. You are given the repository's README, file tree, the list of changed
-files with their contents, who pushed, and the commit messages. Read them and run ONLY what the
-change actually requires — do not run suites unrelated to what changed.
+ANALYZER_SYSTEM = """You are a senior QA architect. ARIA does NOT run pre-written test suites — it GENERATES
+tests specific to the change that was just pushed, then runs them with pytest + Playwright. Your job is
+to decide (1) whether this change is worth generating tests for, and (2) what kind of tests fit and where
+to focus them. You are given the repository's README, file tree, the changed files with their contents,
+who pushed, and the commit messages.
 
-Core principle: precision over coverage. If only one API endpoint changed, run the API endpoint
-suite (optionally narrowed with a pytest keyword) — not the whole battery. Empty/over-broad plans
-waste CI time, which is exactly what we want to avoid.
+Decide:
+- should_test: true if the change touches real product behaviour (UI, API, business logic). false for
+  docs-only, comments, formatting, config that doesn't affect behaviour, or pure dependency bumps.
+- test_kind: the type of generated tests that best fits WHAT CHANGED:
+    "ui"         -> frontend/page/component changes (run in a real browser via Playwright).
+    "api"        -> backend endpoint/service/data changes (HTTP calls against the API).
+    "functional" -> business logic / integration spanning multiple units.
+    "mixed"      -> the change spans both frontend and backend.
+  Match this to the change and the repo type (a backend change cannot be UI-tested, and vice-versa).
+- focus_areas: the behaviours/areas most at risk from this change (e.g. "authentication", "checkout").
+- affected_pages: page URLs/routes affected (for UI changes); empty list otherwise.
+- pytest_keyword: an optional pytest -k expression to narrow the generated tests (e.g. "login or auth").
+  Leave it "" to run all generated tests.
+- priority: "critical" | "high" | "medium" | "low". Release / PR-to-main / auth / payment changes are high+.
 
 Guidance:
 - Map the changed files to the affected behaviour using the README and file tree for context.
-- Enable a suite ONLY if the change plausibly affects what that suite covers.
-- Use "pytest_keyword" to narrow execution to the relevant tests (a pytest -k expression, e.g.
-  "login or auth"). Leave it "" to run the whole selected suite.
-- auth/**, middleware/**, login/session code -> include auth coverage.
-- docs/**, *.md, comments only -> set everything false, priority "low".
-- release event or PR to main/master -> be more thorough (regression + critical paths), priority "high".
-- New feature files with no matching test -> run_generated_tests=true.
-- Note: repo-type guardrails are enforced after you respond (a backend repo cannot run UI suites and
-  vice-versa), so focus on choosing the smallest correct set; don't worry about cross-type leakage.
+- auth/**, middleware/**, login/session code -> focus on authentication, high priority.
+- docs/**, *.md, comments-only -> should_test=false, priority "low".
 
 Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 
@@ -57,18 +62,9 @@ Commit messages:
 
 Return exactly this JSON shape:
 {{
-  "reasoning": "why these suites, tied to what actually changed",
-  "run_ui_smoke": bool,
-  "run_ui_regression": bool,
-  "run_ui_critical_paths": bool,
-  "run_api_endpoints": bool,
-  "run_api_auth": bool,
-  "run_api_contracts": bool,
-  "run_functional_integration": bool,
-  "run_functional_edge_cases": bool,
-  "run_accessibility": bool,
-  "run_generated_tests": bool,
-  "run_load_tests": bool,
+  "reasoning": "what to test and why, tied to what actually changed",
+  "should_test": bool,
+  "test_kind": "ui" | "api" | "functional" | "mixed",
   "pytest_keyword": "pytest -k expression to narrow tests, or empty string",
   "priority": "critical" | "high" | "medium" | "low",
   "focus_areas": ["list of areas most at risk"],
@@ -76,28 +72,49 @@ Return exactly this JSON shape:
 }}"""
 
 
-TEST_GENERATOR_SYSTEM = """You are a senior QA engineer. Generate a complete, runnable pytest+Playwright test file
-for the changed feature described. The file must:
-- Import fixtures from conftest.py (page, base_url, api_client)
-- Use @pytest.mark.ui or @pytest.mark.api markers appropriately
-- Cover happy paths, edge cases, and error states
-- Be immediately executable with no modifications
+TEST_GENERATOR_SYSTEM = """You are a senior QA engineer. Generate ONE complete, runnable pytest test file that
+targets the SPECIFIC code change described — not generic smoke tests. The file must:
+- Import fixtures from conftest.py. Available fixtures: page (Playwright browser page), base_url
+  (frontend URL), api_client (httpx.Client), api_base_url (API URL).
+- Choose the right tooling for the test_kind you are given:
+    "ui"         -> drive the browser with the `page` fixture against `base_url`; mark @pytest.mark.ui.
+    "api"        -> call endpoints with the `api_client` fixture against `api_base_url`; mark @pytest.mark.api.
+    "functional" -> exercise the business logic / integration, using whichever fixtures fit.
+    "mixed"      -> combine UI and API tests in the same file with the appropriate markers.
+- Cover the happy path, important edge cases, and error/invalid states for the changed behaviour.
+- Focus on the focus_areas and affected_pages provided.
+- Be immediately executable with no modifications.
 Output only valid Python code — no markdown fences, no explanation."""
 
 
-def test_generator_user_prompt(changed_files: list, file_contents: dict, product_context: str = "") -> str:
+def test_generator_user_prompt(
+    changed_files: list,
+    file_contents: dict,
+    product_context: str = "",
+    repo_type: str = "unknown",
+    test_kind: str = "mixed",
+    focus_areas: list | None = None,
+    affected_pages: list | None = None,
+) -> str:
     files_section = "\n\n".join(
         f"### {path}\n```\n{content}\n```"
         for path, content in file_contents.items()
     )
     context_section = f"\n\n## Product Context\n{product_context}" if product_context else ""
-    return f"""Changed/new files that need test coverage:
+    focus = ", ".join(focus_areas or []) or "N/A"
+    pages = ", ".join(affected_pages or []) or "N/A"
+    return f"""Repository type: {repo_type}
+Test kind to generate: {test_kind}
+Focus areas (most at risk): {focus}
+Affected pages/routes: {pages}
+
+Changed/new files that need test coverage:
 {chr(10).join(f'  - {f}' for f in changed_files)}
 
 File contents:
 {files_section or '(contents not available — use diff context)'}{context_section}
 
-Generate a complete pytest+Playwright test file covering the above changes.
+Generate a complete {test_kind} test file covering the above changes for this {repo_type} repository.
 Name each test function clearly so it describes what user behaviour it verifies."""
 
 

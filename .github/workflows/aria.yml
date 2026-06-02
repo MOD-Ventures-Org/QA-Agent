@@ -31,7 +31,7 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
-      - name: Run test suites
+      - name: Run ARIA unit tests + any generated tests
         env:
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -45,7 +45,7 @@ jobs:
           PLAYWRIGHT_HEADLESS: "True"
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
-          python -m pytest testing/suites/ \
+          python -m pytest tests/ testing/suites/generated/ \
             --json-report \
             --json-report-file=report.json \
             -v \

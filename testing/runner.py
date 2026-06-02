@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -12,19 +11,6 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 SUITES_DIR = Path(__file__).parent / "suites"
 GENERATED_DIR = SUITES_DIR / "generated"
-
-SUITE_MAP = {
-    "run_ui_smoke": str(SUITES_DIR / "ui" / "test_smoke.py"),
-    "run_ui_regression": str(SUITES_DIR / "ui" / "test_regression.py"),
-    "run_ui_critical_paths": str(SUITES_DIR / "ui" / "test_critical_paths.py"),
-    "run_api_endpoints": str(SUITES_DIR / "api" / "test_endpoints.py"),
-    "run_api_auth": str(SUITES_DIR / "api" / "test_auth.py"),
-    "run_api_contracts": str(SUITES_DIR / "api" / "test_contracts.py"),
-    "run_functional_integration": str(SUITES_DIR / "functional" / "test_integration.py"),
-    "run_functional_edge_cases": str(SUITES_DIR / "functional" / "test_edge_cases.py"),
-    "run_accessibility": str(SUITES_DIR / "accessibility" / "test_axe.py"),
-    "run_load_tests": str(SUITES_DIR / "load" / "test_load.py"),
-}
 
 
 def _build_pytest_cmd(paths: list, report_file: Path, keyword: str = "") -> list:
@@ -43,23 +29,13 @@ def _build_pytest_cmd(paths: list, report_file: Path, keyword: str = "") -> list
 
 async def run_tests(test_plan: TestPlan) -> TestResult:
     paths = []
-    selected_flags = []
-    for flag, path in SUITE_MAP.items():
-        if getattr(test_plan, flag, False):
-            selected_flags.append(flag)
-            if os.path.exists(path):
-                paths.append(path)
-            else:
-                logger.warning("Expected test suite path missing: %s", path)
+    if GENERATED_DIR.exists():
+        paths = [str(p) for p in GENERATED_DIR.glob("test_*.py")]
 
-    if test_plan.run_generated_tests and GENERATED_DIR.exists():
-        generated = [str(p) for p in GENERATED_DIR.glob("test_*.py")]
-        paths.extend(generated)
-
-    logger.info("Selected suite flags=%s paths=%s", selected_flags, paths)
+    logger.info("Running generated tests: %s", paths)
 
     if not paths:
-        logger.info("No test suites selected — skipping run")
+        logger.info("No generated tests found — skipping run")
         return TestResult()
 
     report_file = Path(tempfile.gettempdir()) / f"aria_report_{uuid4().hex}.json"

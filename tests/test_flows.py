@@ -317,17 +317,10 @@ class TestAnalyzerHappyFlow:
         )
 
         ai_response = json.dumps({
-            "reasoning": "Auth file changed — run API + auth suites",
-            "run_ui_smoke": False,
-            "run_ui_regression": False,
-            "run_ui_critical_paths": True,
-            "run_api_endpoints": True,
-            "run_api_auth": True,
-            "run_api_contracts": False,
-            "run_functional_integration": False,
-            "run_functional_edge_cases": False,
-            "run_accessibility": False,
-            "run_generated_tests": False,
+            "reasoning": "Auth file changed — generate API tests for login",
+            "should_test": True,
+            "test_kind": "api",
+            "pytest_keyword": "",
             "priority": "high",
             "focus_areas": ["authentication"],
             "affected_pages": ["/login"],
@@ -340,10 +333,10 @@ class TestAnalyzerHappyFlow:
             mock_client.messages.create.return_value = mock_response
             plan = asyncio.run(analyze_event(event))
 
-        assert plan.run_api_auth is True
-        assert plan.run_api_endpoints is True
+        assert plan.should_test is True
+        assert plan.test_kind == "api"
         assert plan.priority == "high"
-        assert plan.run_ui_smoke is False
+        assert plan.focus_areas == ["authentication"]
 
     def test_analyzer_docs_only_change_sets_low_priority(self):
         from claude.analyzer import analyze_event
@@ -361,16 +354,9 @@ class TestAnalyzerHappyFlow:
 
         ai_response = json.dumps({
             "reasoning": "Only docs changed",
-            "run_ui_smoke": False,
-            "run_ui_regression": False,
-            "run_ui_critical_paths": False,
-            "run_api_endpoints": False,
-            "run_api_auth": False,
-            "run_api_contracts": False,
-            "run_functional_integration": False,
-            "run_functional_edge_cases": False,
-            "run_accessibility": False,
-            "run_generated_tests": False,
+            "should_test": False,
+            "test_kind": "mixed",
+            "pytest_keyword": "",
             "priority": "low",
             "focus_areas": [],
             "affected_pages": [],
@@ -384,14 +370,11 @@ class TestAnalyzerHappyFlow:
             plan = asyncio.run(analyze_event(event))
 
         assert plan.priority == "low"
-        assert not any([
-            plan.run_ui_smoke, plan.run_api_endpoints,
-            plan.run_accessibility, plan.run_generated_tests,
-        ])
+        assert plan.should_test is False
 
 
 class TestAnalyzerSadFlow:
-    """Analyzer must fall back to all-suites when AI fails."""
+    """Analyzer must fall back to a testable plan when the AI response is unusable."""
 
     def test_fallback_when_ai_returns_invalid_json(self):
         from claude.analyzer import analyze_event
@@ -410,9 +393,8 @@ class TestAnalyzerSadFlow:
             mock_client.messages.create.return_value = mock_response
             plan = asyncio.run(analyze_event(event))
 
-        # Unknown repo type -> smoke fallback runs a minimal set, not everything
-        assert plan.run_api_endpoints is True
-        assert plan.run_ui_smoke is True
+        # Unusable response -> assume the change is testable, let the generator decide.
+        assert plan.should_test is True
         assert plan.priority == "medium"
 
     def test_fallback_when_ai_raises_exception(self):
@@ -429,8 +411,7 @@ class TestAnalyzerSadFlow:
             mock_client.messages.create.side_effect = RuntimeError("API unreachable")
             plan = asyncio.run(analyze_event(event))
 
-        assert plan.run_api_endpoints is True
-        assert plan.run_ui_smoke is True
+        assert plan.should_test is True
 
     def test_fallback_when_ai_returns_empty_response(self):
         from claude.analyzer import analyze_event
@@ -449,15 +430,15 @@ class TestAnalyzerSadFlow:
             mock_client.messages.create.return_value = mock_response
             plan = asyncio.run(analyze_event(event))
 
-        assert plan.run_api_endpoints is True
+        assert plan.should_test is True
 
 
 # ---------------------------------------------------------------------------
-# SECTION 2b — Repo-type guardrails, minimal plans + load testing
+# SECTION 2b — test_kind inference, keyword passthrough, deployment + fallback
 # ---------------------------------------------------------------------------
 
-class TestRepoGuardrails:
-    """Claude picks the minimal suites; guardrails enforce backend!=UI, frontend!=API/load."""
+class TestPlanShape:
+    """Analyzer maps a change to should_test + test_kind, inferring kind from repo type."""
 
     def _event(self, repo_name: str):
         from webhook.models import GitHubPushEvent
@@ -468,16 +449,13 @@ class TestRepoGuardrails:
             diff_summary="1 commit(s) touching 1 file(s)",
         )
 
-    def _plan_json(self, **flags):
+    def _plan_json(self, **fields):
         base = {
-            "reasoning": "test", "run_ui_smoke": False, "run_ui_regression": False,
-            "run_ui_critical_paths": False, "run_api_endpoints": False, "run_api_auth": False,
-            "run_api_contracts": False, "run_functional_integration": False,
-            "run_functional_edge_cases": False, "run_accessibility": False,
-            "run_generated_tests": False, "run_load_tests": False, "pytest_keyword": "",
-            "priority": "medium", "focus_areas": [], "affected_pages": [],
+            "reasoning": "test", "should_test": True, "test_kind": "",
+            "pytest_keyword": "", "priority": "medium",
+            "focus_areas": [], "affected_pages": [],
         }
-        base.update(flags)
+        base.update(fields)
         return json.dumps(base)
 
     def _analyze(self, repo_name, ai_json):
@@ -491,36 +469,24 @@ class TestRepoGuardrails:
             mock_client.messages.create.return_value = resp
             return asyncio.run(analyze_event(self._event(repo_name), ctx))
 
-    def test_backend_guardrail_disables_ui_keeps_api_load(self):
-        # Claude over-asks for UI on a backend repo — guardrail must strip it.
-        ai = self._plan_json(run_ui_smoke=True, run_accessibility=True,
-                             run_api_endpoints=True, run_load_tests=True)
-        plan = self._analyze("org/backend-service", ai)
-        assert plan.run_api_endpoints is True
-        assert plan.run_load_tests is True
-        assert plan.run_ui_smoke is False
-        assert plan.run_accessibility is False
+    def test_explicit_test_kind_is_respected(self):
+        plan = self._analyze("org/app", self._plan_json(test_kind="functional"))
+        assert plan.should_test is True
+        assert plan.test_kind == "functional"
 
-    def test_frontend_guardrail_disables_api_keeps_ui_functional(self):
-        ai = self._plan_json(run_ui_smoke=True, run_functional_integration=True,
-                            run_api_endpoints=True, run_load_tests=True)
-        plan = self._analyze("org/frontend-web", ai)
-        assert plan.run_ui_smoke is True
-        assert plan.run_functional_integration is True
-        assert plan.run_api_endpoints is False
-        assert plan.run_load_tests is False
+    def test_blank_test_kind_inferred_from_backend(self):
+        plan = self._analyze("org/backend-service", self._plan_json(test_kind=""))
+        assert plan.test_kind == "api"
 
-    def test_minimal_plan_is_respected(self):
-        # Only one suite requested -> only that one runs (no blanket expansion).
-        plan = self._analyze("org/backend", self._plan_json(run_api_endpoints=True))
-        selected = [f for f in vars(plan) if f.startswith("run_") and getattr(plan, f)]
-        assert selected == ["run_api_endpoints"]
+    def test_blank_test_kind_inferred_from_frontend(self):
+        plan = self._analyze("org/frontend-web", self._plan_json(test_kind=""))
+        assert plan.test_kind == "ui"
 
     def test_keyword_passthrough(self):
-        plan = self._analyze("org/backend", self._plan_json(run_api_endpoints=True, pytest_keyword="login or auth"))
+        plan = self._analyze("org/backend", self._plan_json(pytest_keyword="login or auth"))
         assert plan.pytest_keyword == "login or auth"
 
-    def test_smoke_fallback_trimmed_for_backend(self):
+    def test_fallback_is_testable_for_backend(self):
         from claude.analyzer import analyze_event
         from claude.repo_context import RepoContext
 
@@ -528,11 +494,11 @@ class TestRepoGuardrails:
             mock_client.messages.create.side_effect = RuntimeError("boom")
             plan = asyncio.run(analyze_event(self._event("org/backend"), RepoContext(repo_type="backend")))
 
-        assert plan.run_api_endpoints is True   # smoke keeps api for backend
-        assert plan.run_ui_smoke is False       # guardrail strips ui smoke
+        assert plan.should_test is True
+        assert plan.test_kind == "api"   # inferred from backend repo type
         assert plan.priority == "medium"
 
-    def test_deployment_event_includes_load(self):
+    def test_deployment_event_is_testable(self):
         from claude.analyzer import analyze_event
         from webhook.models import GitHubPushEvent
 
@@ -541,13 +507,8 @@ class TestRepoGuardrails:
             author="dev", commit_messages=[], changed_files=[], diff_summary="deploy",
         )
         plan = asyncio.run(analyze_event(event))
-        assert plan.run_load_tests is True
-
-    def test_suite_map_wires_load_suite(self):
-        from testing.runner import SUITE_MAP
-
-        assert "run_load_tests" in SUITE_MAP
-        assert SUITE_MAP["run_load_tests"].endswith("test_load.py")
+        assert plan.should_test is True
+        assert plan.priority == "high"
 
 
 class TestRepoContext:
@@ -791,26 +752,6 @@ class TestProductEvaluationReadsCode:
         assert "Return exactly this JSON shape" in prompt
 
 
-class TestLoadSuiteHelpers:
-    """The load suite's percentile helper behaves correctly."""
-
-    def test_percentile_midpoint(self):
-        from testing.suites.load.test_load import _percentile
-
-        assert _percentile([10, 20, 30, 40], 0.5) == 25.0
-
-    def test_percentile_p95_picks_top(self):
-        from testing.suites.load.test_load import _percentile
-
-        values = list(range(1, 101))  # 1..100
-        assert _percentile(values, 0.95) >= 95
-
-    def test_percentile_empty_is_zero(self):
-        from testing.suites.load.test_load import _percentile
-
-        assert _percentile([], 0.95) == 0.0
-
-
 # ---------------------------------------------------------------------------
 # SECTION 3 — Result Parser (testing/result_parser.py)
 # ---------------------------------------------------------------------------
@@ -957,8 +898,8 @@ def _test_plan():
     from claude.analyzer import TestPlan
     return TestPlan(
         reasoning="Auth file changed",
-        run_api_auth=True,
-        run_api_endpoints=True,
+        should_test=True,
+        test_kind="api",
         priority="high",
     )
 

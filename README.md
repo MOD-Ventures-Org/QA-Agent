@@ -1,6 +1,6 @@
 # ARIA — Autonomous Regression & Intelligence Agent
 
-ARIA is a fully autonomous QA agent for your GitHub repos. When code is **merged** or **deployed**, it clones the repo, reads the actual change, and runs **only the test suites that change requires** — then reports results to Discord, files bug tickets, and produces a plain-English manual test checklist for human QA.
+ARIA is a fully autonomous QA agent for your GitHub repos. When code is **merged** or **deployed**, it clones the repo, reads the actual change, **generates tests specific to that change**, and runs them with pytest + Playwright — then reports results to Discord, files bug tickets, and produces a plain-English manual test checklist for human QA. ARIA does **not** run a fixed battery of pre-written suites; every test it runs is generated for the change in front of it.
 
 It uses a dual-provider AI client: **Anthropic Claude** is primary, with **Kimi** as an automatic fallback if Claude is unavailable.
 
@@ -13,27 +13,29 @@ It uses a dual-provider AI client: **Anthropic Claude** is primary, with **Kimi*
 
    Pull-request-opened/synchronize, reviews, and feature-branch pushes are **skipped**.
 2. **Repo context** — ARIA shallow-clones the pushed repo/branch and extracts the `README`, file tree, and the contents of the changed files. It detects whether the repo is **backend** or **frontend** from the name and file signals (`package.json` → frontend, `pyproject.toml`/`requirements.txt` → backend).
-3. **Claude plans the run** — using that context, Claude picks the **minimal** set of suites the change actually needs, and may narrow execution with a `pytest -k` keyword. The goal is precision, not running everything.
-   - **Guardrails:** a backend repo never runs UI suites; a frontend repo never runs API/load suites.
-   - **Fallback:** if Claude can't produce a plan, ARIA runs a minimal **smoke** set (guardrail-trimmed), not the whole battery.
-   - **Deployments** run a full validation pass.
-4. **Test generation** — for new features, Claude generates fresh pytest+Playwright tests.
-5. **Execution** — Playwright/pytest runs the selected suites (UI, API, functional, accessibility, **load**), honoring the `-k` filter.
+3. **Claude analyzes the change** — using that context, Claude decides **whether the change is worth testing** (`should_test`) and **what kind of tests fit** (`test_kind`: `ui`, `api`, `functional`, or `mixed`), plus the focus areas, affected pages, priority, and an optional `pytest -k` keyword. Docs-only/comment changes are marked not worth testing.
+   - **Test kind follows the change:** a frontend change yields browser (UI) tests; a backend change yields API tests; a change spanning both yields `mixed`. When Claude omits the kind, it's inferred from the repo type.
+   - **Fallback:** if Claude can't produce a plan, ARIA assumes the change is testable and lets the generator decide what to write.
+   - **Deployments** generate a smoke validation pass.
+4. **Test generation** — Claude generates a fresh pytest test file targeting the specific change, using the right tooling for the test kind (Playwright `page` for UI, `httpx` `api_client` for API), covering happy path, edge cases, and error states.
+5. **Execution** — pytest runs the generated tests (honoring the `-k` filter) and captures a screenshot on any UI failure. If a change isn't worth testing, generation/execution are skipped but the report is still posted.
 6. **Manual test cases** — Claude writes plain-English, step-by-step manual test cases so a human QA engineer can verify the change by hand.
 7. **Persistence** — results, screenshots, and the manual test cases are stored in MongoDB.
 8. **Reporting** — Discord gets a rich embed showing **repository, branch, event, who pushed, commit message**, pass/fail counts, the bug summary, and the manual test cases.
 9. **Tickets (only when there are bugs)** — if any test fails, ARIA files a ClickUp ticket per failure **and** a manual-QA checklist ticket. On a clean run, **no tickets are created**.
 
-## Test Suites
+## Generated Tests
 
-| Suite | Runs for | Location |
+ARIA generates one pytest file per change into `testing/suites/generated/`, choosing the test kind from what changed:
+
+| `test_kind` | Generated for | Tooling |
 |---|---|---|
-| UI (smoke / regression / critical paths) | frontend changes | `testing/suites/ui/` |
-| Functional (integration / edge cases) | either | `testing/suites/functional/` |
-| Accessibility (axe-core) | frontend changes | `testing/suites/accessibility/` |
-| API (endpoints / auth / contracts) | backend changes | `testing/suites/api/` |
-| **Load** (concurrent requests, p95 + success-rate thresholds) | backend changes | `testing/suites/load/` |
-| Generated | new features | `testing/suites/generated/` |
+| `ui` | frontend / page / component changes | Playwright browser tests via the `page` fixture against `BASE_URL_FRONTEND` |
+| `api` | backend endpoint / service / data changes | `httpx` calls via the `api_client` fixture against `BASE_URL_API` |
+| `functional` | business logic / integration spanning units | whichever fixtures fit |
+| `mixed` | changes touching both frontend and backend | UI + API tests in one file |
+
+Shared fixtures (`page`, `base_url`, `api_client`, `api_base_url`) live in `testing/suites/conftest.py`. Generated UI tests auto-capture a screenshot on failure.
 
 ## Quick Start
 
@@ -86,20 +88,14 @@ Returns `{"status": "ok", "tunnel": "https://xxxx.ngrok.io"}`.
 ## Running Tests Manually
 
 ```bash
-# All suites
-python -m pytest testing/suites/ -v
-
-# Specific suite
-python -m pytest testing/suites/ui/ -v
-python -m pytest testing/suites/api/ -v
-python -m pytest testing/suites/load/ -v
-python -m pytest testing/suites/accessibility/ -v
+# Run the tests ARIA generated for the latest change
+python -m pytest testing/suites/generated/ -v
 
 # Narrow with a keyword (same mechanism ARIA uses)
-python -m pytest testing/suites/api/ -k "auth or login" -v
+python -m pytest testing/suites/generated/ -k "auth or login" -v
 
-# With JSON report
-python -m pytest testing/suites/ --json-report --json-report-file=report.json -v
+# With JSON report (same mechanism ARIA uses internally)
+python -m pytest testing/suites/generated/ --json-report --json-report-file=report.json -v
 
 # The agent's own unit tests
 python -m pytest tests/ -v
@@ -123,11 +119,9 @@ python -m pytest tests/ -v
 | `NGROK_AUTHTOKEN` | Ngrok auth token (local dev only) |
 | `MONGODB_URI` | MongoDB connection string |
 | `MONGODB_DB_NAME` | MongoDB database name (default: `aria`) |
-| `BASE_URL_FRONTEND` | Frontend URL for Playwright tests |
-| `BASE_URL_API` | API base URL for httpx/load tests |
+| `BASE_URL_FRONTEND` | Frontend URL for generated Playwright UI tests |
+| `BASE_URL_API` | API base URL for generated httpx API tests |
 | `PLAYWRIGHT_HEADLESS` | `True` for headless mode (default: `True`) |
-
-**Load test tuning** (optional, sensible defaults): `LOAD_TEST_REQUESTS` (50), `LOAD_TEST_CONCURRENCY` (10), `LOAD_TEST_PATH` (`/health`), `LOAD_TEST_MAX_P95_MS` (1000), `LOAD_TEST_MIN_SUCCESS_RATE` (0.95).
 
 > `ANTHROPIC_API_KEY` is the primary provider; `KIMI_API_KEY` enables the fallback. Set both for resilience.
 
@@ -155,14 +149,10 @@ QA-Agent/
 ├── webhook/                # GitHub webhook receiver, signature validation, trigger gate
 ├── claude/                 # AI: analyzer, repo_context (clone), test_generator,
 │                           #     manual_tests, report_writer, evaluator, client, prompts
-├── testing/                # pytest runner + test suites
+├── testing/                # pytest runner + regression watcher
 │   └── suites/
-│       ├── ui/             # Playwright UI tests
-│       ├── api/            # API contract tests
-│       ├── functional/     # Integration & edge case tests
-│       ├── accessibility/  # axe-core a11y tests
-│       ├── load/           # Concurrent load tests (httpx)
-│       └── generated/      # Claude-generated tests (auto-created)
+│       ├── conftest.py     # shared fixtures: page, base_url, api_client, api_base_url
+│       └── generated/      # Claude-generated, change-specific tests (auto-created)
 ├── storage/                # MongoDB persistence
 ├── integrations/           # Discord + ClickUp
 ├── tests/                  # ARIA's own unit tests

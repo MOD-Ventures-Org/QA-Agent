@@ -36,15 +36,6 @@ def _build_embed(
     else:
         color = COLOR_AMBER
 
-    suites_run = sum(
-        1 for flag in [
-            test_plan.run_ui_smoke, test_plan.run_ui_regression, test_plan.run_ui_critical_paths,
-            test_plan.run_api_endpoints, test_plan.run_api_auth, test_plan.run_api_contracts,
-            test_plan.run_functional_integration, test_plan.run_functional_edge_cases,
-            test_plan.run_accessibility,
-        ] if flag
-    )
-
     failing_names = "\n".join(
         f"• `{f['name']}`" for f in result.failure_details[:5]
     ) or "None"
@@ -58,7 +49,7 @@ def _build_embed(
         {"name": "Pushed by", "value": event.author or "unknown", "inline": True},
         {"name": "Commit", "value": latest_commit[:200], "inline": False},
         {"name": "Priority", "value": f"{PRIORITY_EMOJI.get(test_plan.priority, '')} {test_plan.priority}", "inline": True},
-        {"name": "Suites Run", "value": str(suites_run), "inline": True},
+        {"name": "Test Type", "value": test_plan.test_kind if test_plan.should_test else "none", "inline": True},
         {"name": "Reasoning", "value": test_plan.reasoning[:200], "inline": False},
         {"name": "✅ Passed", "value": str(result.passed), "inline": True},
         {"name": "❌ Failed", "value": str(result.failed), "inline": True},

@@ -116,14 +116,6 @@ def _should_process_event(event: GitHubPushEvent) -> bool:
     return False
 
 
-def _selected_suites(test_plan: TestPlan) -> list[str]:
-    return [
-        name
-        for name in TestPlan.__dataclass_fields__
-        if name.startswith("run_") and getattr(test_plan, name, False)
-    ]
-
-
 async def _run_pipeline(event: GitHubPushEvent):
     from config import settings
     from claude.analyzer import TestPlan, analyze_event, ai_reachable
@@ -151,20 +143,25 @@ async def _run_pipeline(event: GitHubPushEvent):
     repo_context = build_repo_context(event, settings.github_token)
     try:
         test_plan = await analyze_event(event, repo_context)
-        selected_suites = _selected_suites(test_plan)
         logger.info(f"Repo type={repo_context.repo_type} cloned={repo_context.cloned}")
         logger.info(f"Test plan priority={test_plan.priority} reasoning={test_plan.reasoning[:80]}")
-        logger.info(f"Selected suites: {selected_suites} keyword={test_plan.pytest_keyword!r}")
+        logger.info(
+            f"should_test={test_plan.should_test} test_kind={test_plan.test_kind} "
+            f"keyword={test_plan.pytest_keyword!r}"
+        )
 
-        generated_tests = None
-        if test_plan.run_generated_tests:
-            generated_tests = await generate_tests(event, test_plan, repo_context)
-
-        # Plain-English manual test cases for a human QA engineer.
+        # Plain-English manual test cases for a human QA engineer (always produced).
         manual_plan = await generate_manual_tests(event, repo_context)
 
-        test_result = await run_tests(test_plan)
-        test_result = await check_regression(event, test_result)
+        # Generate change-specific tests and run them only when the change is worth testing.
+        generated_tests = None
+        test_result = TestResult()
+        if test_plan.should_test:
+            generated_tests = await generate_tests(event, test_plan, repo_context)
+            test_result = await run_tests(test_plan)
+            test_result = await check_regression(event, test_result)
+        else:
+            logger.info("Change not worth testing (should_test=false) — skipping generation/run")
     finally:
         repo_context.cleanup()
 

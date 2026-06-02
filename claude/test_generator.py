@@ -73,6 +73,9 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
     if product_context:
         logger.info("Product context loaded from PRODUCT_CONTEXT.md")
 
+    repo_type = getattr(repo_context, "repo_type", "unknown")
+    logger.info(f"Generating {test_plan.test_kind} tests for a {repo_type} repo")
+
     try:
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -82,7 +85,15 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
             messages=[
                 {
                     "role": "user",
-                    "content": test_generator_user_prompt(event.changed_files, file_contents, product_context),
+                    "content": test_generator_user_prompt(
+                        event.changed_files,
+                        file_contents,
+                        product_context,
+                        repo_type=repo_type,
+                        test_kind=test_plan.test_kind,
+                        focus_areas=test_plan.focus_areas,
+                        affected_pages=test_plan.affected_pages,
+                    ),
                 }
             ],
         )
