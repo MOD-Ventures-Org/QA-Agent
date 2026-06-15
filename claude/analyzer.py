@@ -3,7 +3,7 @@ import socket
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from claude.client import DualAIClient
+from claude.client import AIQuotaExceededError, DualAIClient
 from claude.repo_context import RepoContext, detect_repo_type
 
 from config import settings
@@ -31,7 +31,7 @@ class TestPlan:
     affected_pages: List[str] = field(default_factory=list)
 
 
-DEPLOYMENT_EVENTS = ("deployment", "deployment_status")
+DEPLOYMENT_EVENTS = ("deployment_status",)
 
 
 def _test_kind_for_repo(repo_type: str) -> str:
@@ -114,6 +114,8 @@ async def analyze_event(event: GitHubPushEvent, repo_context: Optional[RepoConte
             f"keyword={plan.pytest_keyword!r} priority={plan.priority} reasoning={plan.reasoning[:80]}"
         )
         return plan
+    except AIQuotaExceededError:
+        raise
     except Exception as e:
         logger.error(f"Claude analyzer failed: {e} — assuming change is testable")
         reason = "AI analysis unavailable — generated tests from the change itself."

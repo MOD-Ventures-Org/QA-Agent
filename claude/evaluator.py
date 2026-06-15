@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass, field
 from typing import List
 
-from claude.client import DualAIClient
+from claude.client import AIQuotaExceededError, DualAIClient
 
 from config import settings
 from utils.logger import get_logger
@@ -51,6 +51,8 @@ async def evaluate_product(event, test_plan, test_result, repo_context=None) -> 
         raw = message.content[0].text.strip()
         data = json.loads(raw)
         return ProductEvaluation(**{k: v for k, v in data.items() if k in ProductEvaluation.__dataclass_fields__})
+    except AIQuotaExceededError:
+        raise
     except Exception as e:
         logger.error(f"Product evaluator failed: {e}")
         return _fallback_evaluation(test_result, f"Evaluator error: {e}.")

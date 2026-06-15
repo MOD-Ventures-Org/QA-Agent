@@ -118,10 +118,17 @@ Generate a complete {test_kind} test file covering the above changes for this {r
 Name each test function clearly so it describes what user behaviour it verifies."""
 
 
-REPORT_WRITER_SYSTEM = """You are a senior QA engineer writing a plain-English bug report for developers AND
+REPORT_WRITER_SYSTEM = """You are a senior QA engineer writing plain-English bug reports for developers AND
 non-technical QA engineers. Use clear everyday language, avoid jargon and stack-trace speak, and write
 so anyone on the team can understand what broke. Be concise, precise, and actionable — focus on user
-impact and the likely root cause."""
+impact and the likely root cause.
+
+For EACH failing test, write a short plain-English title describing what feature or flow is broken
+(no test function names, no file paths, no code) and a 1-3 sentence plain-English description of what
+broke, the likely cause, and the user impact. Then write one overall summary covering all the failures
+together.
+
+Respond ONLY with a JSON object — no markdown, no preamble, no trailing text."""
 
 
 MANUAL_TESTS_SYSTEM = """You are a senior QA engineer writing MANUAL test cases in plain English so a human
@@ -183,13 +190,19 @@ def report_writer_user_prompt(test_plan_reasoning: str, failures: list) -> str:
 Failing tests:
 {failure_text}
 
-Write a plain-English bug summary covering:
-1. What broke and which user flows are affected
-2. Likely root cause
-3. Severity assessment
-4. Suggested fix direction
-
-Keep it under 400 words."""
+Write a plain-English bug report. Return exactly this JSON shape:
+{{
+  "summary": "<overall summary under 400 words covering: what broke and which user flows are
+    affected, likely root cause, severity assessment, and suggested fix direction>",
+  "items": [
+    {{
+      "test_name": "<exact test name copied from above, so this item can be matched to its test>",
+      "title": "<short plain-English title for what's broken — no test names, file paths, or code>",
+      "description": "<1-3 plain-English sentences: what broke, likely cause, and user impact>"
+    }}
+  ]
+}}
+Include exactly one item per failing test listed above, in the same order."""
 
 
 EVALUATOR_SYSTEM = """You are a product quality advisor reporting to a business owner, not a developer.

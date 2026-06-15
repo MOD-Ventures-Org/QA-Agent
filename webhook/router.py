@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 
@@ -98,13 +99,15 @@ def _should_run_evaluation(event: GitHubPushEvent) -> bool:
     return False
 
 
-DEPLOY_EVENTS = ("deployment", "deployment_status", "release")
+DEPLOY_EVENTS = ("deployment_status", "release")
 MAIN_BRANCHES = ("main", "master")
 
 
 def _should_process_event(event: GitHubPushEvent) -> bool:
     """Run the QA pipeline only for merged code (PR merge into any branch, or a
-    push landing on main/master) and deployment/release events."""
+    push landing on main/master) and deployment_status/release events. Plain
+    "deployment" events are intentionally ignored — deployment_status carries
+    the same info once the deployment has actually progressed."""
     if event.event_type in DEPLOY_EVENTS:
         return True
     if event.event_type in ("pull_request", "pull_request_review"):
@@ -171,7 +174,7 @@ def _eval_dict(evaluation) -> dict:
     }
 
 
-async def _run_pipeline(event: GitHubPushEvent):
+async def _run_pipeline(event: GitHubPushEvent, _ctx: Optional[dict] = None):
     import uuid
 
     from config import settings
@@ -192,6 +195,9 @@ async def _run_pipeline(event: GitHubPushEvent):
 
     run_id = str(uuid.uuid4())[:8]
     link = build_run_link(run_id)
+    if _ctx is not None:
+        _ctx["run_id"] = run_id
+        _ctx["link"] = link
     logger.info(f"Pipeline started run_id={run_id} for {event.repo_name} [{event.branch}] event={event.event_type}")
 
     # Create the run record and ping Discord immediately so the dashboard link works
@@ -287,7 +293,7 @@ async def _run_pipeline(event: GitHubPushEvent):
             f"— Discord report only; skipping test_runs save and ClickUp tickets"
         )
         await runs.finish_step(run_id, "persist", status="skipped", output="errored run — not saved to test_runs")
-        bug_summary = await write_bug_report(test_plan, test_result)
+        bug_summary = (await write_bug_report(test_plan, test_result)).summary
         await runs.patch_run(run_id, bug_summary=bug_summary)
         await runs.finish_step(run_id, "tickets", status="skipped", output="errored run — no tickets created")
 
@@ -314,8 +320,9 @@ async def _run_pipeline(event: GitHubPushEvent):
         for failure in (test_result.failure_details or []):
             logger.warning(f"  FAILED: {failure.get('name')} — {failure.get('error', '')[:200]}")
 
-        bug_summary = await write_bug_report(test_plan, test_result)
-        clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_summary)
+        bug_report = await write_bug_report(test_plan, test_result)
+        bug_summary = bug_report.summary
+        clickup_ids = await file_bug_tickets(run_id, event, test_plan, test_result, bug_report)
         await save_bug_report(run_id, event, test_result, bug_summary, clickup_ids)
         tickets = [{"id": tid, "url": f"https://app.clickup.com/t/{tid}"} for tid in (clickup_ids or [])]
 
@@ -348,9 +355,37 @@ async def _run_pipeline(event: GitHubPushEvent):
     logger.info(f"Discord report posted message_id={discord_message_id}")
 
 
+async def _handle_ai_quota_exceeded(run_id: Optional[str], event: GitHubPushEvent, link: str, exc: Exception):
+    """An AI provider reported a token/usage/quota limit error and no provider
+    could pick up the slack. Log it, mark the run as failed (so the dashboard
+    shows it), and alert Discord."""
+    from storage import runs
+    from integrations.discord import post_ai_quota_exceeded_report
+
+    message = f"AI usage limit/quota exceeded: {exc}"
+    logger.error(f"{message} — run_id={run_id or 'unknown'} repo={event.repo_name} [{event.branch}]")
+
+    if run_id:
+        run_doc = await runs.get_run(run_id)
+        running_step = next(
+            (s.get("key") for s in (run_doc or {}).get("steps", []) if s.get("status") == "running"),
+            None,
+        )
+        if running_step:
+            await runs.finish_step(run_id, running_step, status="failed", error=message)
+        await runs.patch_run(run_id, status="failed", bug_summary=message)
+
+    await post_ai_quota_exceeded_report(event, run_id or "unknown", link, str(exc))
+
+
 async def _run_pipeline_safe(event: GitHubPushEvent):
+    from claude.client import AIQuotaExceededError
+
+    ctx: dict = {}
     try:
-        await _run_pipeline(event)
+        await _run_pipeline(event, ctx)
+    except AIQuotaExceededError as exc:
+        await _handle_ai_quota_exceeded(ctx.get("run_id"), event, ctx.get("link", ""), exc)
     except Exception as exc:
         logger.exception(
             "Pipeline failed for %s [%s] event=%s: %s",

@@ -233,15 +233,27 @@ class TestWebhookTriggerGate:
         r = _post_webhook(http_client, _pr_payload(merged=True, base="main"), "pull_request", webhook_secret)
         assert r.json()["status"] == "skipped"
 
-    def test_deployment_event_accepted(self, http_client, webhook_secret):
+    def test_deployment_event_skipped(self, http_client, webhook_secret):
+        # Plain "deployment" events are ignored — wait for "deployment_status" instead.
         payload = {
             "repository": {"full_name": "org/repo"},
             "sender": {"login": "dev"},
             "deployment": {"ref": "main"},
             "commits": [],
         }
+        r = _post_webhook(http_client, payload, "deployment", webhook_secret)
+        assert r.json()["status"] == "skipped"
+
+    def test_deployment_status_event_accepted(self, http_client, webhook_secret):
+        payload = {
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "dev"},
+            "deployment": {"ref": "main"},
+            "deployment_status": {"state": "success"},
+            "commits": [],
+        }
         with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
-            r = _post_webhook(http_client, payload, "deployment", webhook_secret)
+            r = _post_webhook(http_client, payload, "deployment_status", webhook_secret)
         assert r.json()["status"] == "accepted"
 
 
@@ -303,11 +315,13 @@ class TestGracefulFailures:
         ])
         with patch("claude.report_writer.client") as mock_client:
             mock_client.messages.create.side_effect = OSError("[Errno 11001] getaddrinfo failed")
-            summary = asyncio.run(write_bug_report(TestPlan(reasoning="r"), result))
+            bug_report = asyncio.run(write_bug_report(TestPlan(reasoning="r"), result))
 
-        assert "getaddrinfo" not in summary
-        assert "2 automated test" in summary
-        assert "test_login" in summary
+        assert "getaddrinfo" not in bug_report.summary
+        assert "2 automated test" in bug_report.summary
+        assert "test_login" in bug_report.summary
+        assert len(bug_report.items) == 2
+        assert bug_report.items[0].test_name == "api/test_auth.py::test_login"
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +461,22 @@ class TestAnalyzerSadFlow:
 
         assert plan.should_test is True
 
+    def test_quota_exceeded_propagates_instead_of_falling_back(self):
+        from claude.analyzer import analyze_event
+        from claude.client import AIQuotaExceededError
+        from webhook.models import GitHubPushEvent
+
+        event = GitHubPushEvent(
+            event_type="push", repo_name="org/repo", branch="main",
+            author="dev", commit_messages=[], changed_files=[],
+            diff_summary="0 commit(s) touching 0 file(s)",
+        )
+
+        with patch("claude.analyzer.client") as mock_client:
+            mock_client.messages.create.side_effect = AIQuotaExceededError("rate_limit_error: 429 Too Many Requests")
+            with pytest.raises(AIQuotaExceededError):
+                asyncio.run(analyze_event(event))
+
 
 # ---------------------------------------------------------------------------
 # SECTION 2b — test_kind inference, keyword passthrough, deployment + fallback
@@ -513,12 +543,12 @@ class TestPlanShape:
         assert plan.test_kind == "api"   # inferred from backend repo type
         assert plan.priority == "medium"
 
-    def test_deployment_event_is_testable(self):
+    def test_deployment_status_event_is_testable(self):
         from claude.analyzer import analyze_event
         from webhook.models import GitHubPushEvent
 
         event = GitHubPushEvent(
-            event_type="deployment", repo_name="org/anything", branch="main",
+            event_type="deployment_status", repo_name="org/anything", branch="main",
             author="dev", commit_messages=[], changed_files=[], diff_summary="deploy",
         )
         plan = asyncio.run(analyze_event(event))
@@ -682,6 +712,173 @@ class TestManualTestCases:
         assert "- [ ]" in md
         assert "Login" in md
         assert "dashboard" in md
+
+
+class TestBugReportPlainEnglish:
+    """ClickUp tickets for failing generated tests are written in plain English."""
+
+    def _failures(self):
+        return [{
+            "name": "api/test_auth.py::test_login_with_expired_token",
+            "error": "AssertionError: 401 != 200",
+            "traceback": "Traceback (most recent call last): ...",
+        }]
+
+    def test_write_bug_report_parses_summary_and_items(self):
+        from claude.report_writer import write_bug_report
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+
+        ai = json.dumps({
+            "summary": "Login is broken for users with expired tokens.",
+            "items": [
+                {
+                    "test_name": "api/test_auth.py::test_login_with_expired_token",
+                    "title": "Login fails for expired tokens",
+                    "description": "Users with an expired session cannot log back in and see an error instead.",
+                }
+            ],
+        })
+        resp = MagicMock()
+        resp.content = [SimpleNamespace(text=ai)]
+        result = TestResult(total=1, passed=0, failed=1, failure_details=self._failures())
+        with patch("claude.report_writer.client") as mock_client:
+            mock_client.messages.create.return_value = resp
+            bug_report = asyncio.run(write_bug_report(TestPlan(reasoning="r"), result))
+
+        assert "expired tokens" in bug_report.summary
+        assert len(bug_report.items) == 1
+        item = bug_report.items[0]
+        assert item.test_name == "api/test_auth.py::test_login_with_expired_token"
+        assert item.title == "Login fails for expired tokens"
+        assert "session" in item.description
+
+    def test_plain_title_fallback_from_test_name(self):
+        from claude.report_writer import plain_title
+
+        assert plain_title("api/test_auth.py::test_login_with_expired_token") == "Login with expired token is broken"
+
+    def test_file_bug_tickets_uses_plain_english_title_and_description(self):
+        from config import settings
+        from integrations.clickup import file_bug_tickets
+        from claude.report_writer import BugReport, BugReportItem
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+
+        result = TestResult(total=1, passed=0, failed=1, failure_details=self._failures())
+        bug_report = BugReport(
+            summary="Login is broken for users with expired tokens.",
+            items=[BugReportItem(
+                test_name="api/test_auth.py::test_login_with_expired_token",
+                title="Login fails for expired tokens",
+                description="Users with an expired session cannot log back in.",
+            )],
+        )
+
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": "task-1"}
+
+        class FakeAsyncClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json, headers):
+                captured["payload"] = json
+                return FakeResponse()
+
+        with (
+            patch.object(settings, "clickup_enabled", True),
+            patch.object(settings, "clickup_api_token", "tok"),
+            patch.object(settings, "clickup_list_id", "list1"),
+            patch("integrations.clickup.httpx.AsyncClient", FakeAsyncClient),
+        ):
+            ids = asyncio.run(file_bug_tickets("run1", _make_event(), TestPlan(priority="high"), result, bug_report))
+
+        assert ids == ["task-1"]
+        payload = captured["payload"]
+        assert payload["name"] == "[ARIA] 1 failing test(s) — " + _make_event().repo_name + "/" + _make_event().branch
+        assert "test_login_with_expired_token" not in payload["description"]
+        assert "401" not in payload["description"]
+        assert "Login fails for expired tokens" in payload["description"]
+        assert "expired session" in payload["description"]
+
+    def test_file_bug_tickets_consolidates_all_failures_into_one_ticket(self):
+        from config import settings
+        from integrations.clickup import file_bug_tickets
+        from claude.report_writer import BugReport, BugReportItem
+        from claude.analyzer import TestPlan
+        from testing.result_parser import TestResult
+
+        failures = [
+            {"name": "api/test_auth.py::test_login_with_expired_token", "error": "AssertionError: 401 != 200"},
+            {"name": "api/test_signup.py::test_signup_with_duplicate_email", "error": "AssertionError: 500 != 201"},
+        ]
+        result = TestResult(total=2, passed=0, failed=2, failure_details=failures)
+        bug_report = BugReport(
+            summary="Two checks failed.",
+            items=[
+                BugReportItem(
+                    test_name="api/test_auth.py::test_login_with_expired_token",
+                    title="Login fails for expired tokens",
+                    description="Users with an expired session cannot log back in.",
+                ),
+                BugReportItem(
+                    test_name="api/test_signup.py::test_signup_with_duplicate_email",
+                    title="Signup with a duplicate email crashes",
+                    description="Signing up with an email already in use returns a server error.",
+                ),
+            ],
+        )
+
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": "task-consolidated"}
+
+        class FakeAsyncClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def post(self, url, json, headers):
+                captured["payload"] = json
+                return FakeResponse()
+
+        with (
+            patch.object(settings, "clickup_enabled", True),
+            patch.object(settings, "clickup_api_token", "tok"),
+            patch.object(settings, "clickup_list_id", "list1"),
+            patch("integrations.clickup.httpx.AsyncClient", FakeAsyncClient),
+        ):
+            ids = asyncio.run(file_bug_tickets("run1", _make_event(), TestPlan(priority="high"), result, bug_report))
+
+        # One ticket total, covering both failures.
+        assert ids == ["task-consolidated"]
+        payload = captured["payload"]
+        assert "2 failing test(s)" in payload["name"]
+        assert "Login fails for expired tokens" in payload["description"]
+        assert "Signup with a duplicate email crashes" in payload["description"]
 
 
 class TestDiscordReportFields:
@@ -1105,6 +1302,7 @@ class TestPipelineSadFlow:
         # errors > 0 (tests couldn't run reliably): Discord report only —
         # no MongoDB save and no ClickUp tickets.
         from webhook.router import _run_pipeline
+        from claude.report_writer import BugReport
         from testing.result_parser import TestResult
 
         errored = TestResult(
@@ -1117,7 +1315,7 @@ class TestPipelineSadFlow:
             patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=errored),
             patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=errored),
             patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value="error summary"),
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value=BugReport(summary="error summary")),
             patch("storage.mongo.save_test_run", new_callable=AsyncMock) as mock_save,
             patch("storage.mongo.save_manual_tests", new_callable=AsyncMock) as mock_save_manual,
             patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
@@ -1163,6 +1361,39 @@ class TestPipelineAIUnavailable:
         mock_manual_ticket.assert_not_called()  # no manual ticket
         mock_save.assert_not_called()          # nothing saved
         mock_report.assert_not_called()        # no full report
+
+
+class TestPipelineAIQuotaExceeded:
+    """When an AI provider reports a token/usage/quota limit error mid-run, the
+    run is marked failed (logs + dashboard) and a focused Discord alert is sent."""
+
+    def test_quota_error_marks_run_failed_and_alerts_discord(self):
+        from webhook.router import _run_pipeline_safe
+        from claude.client import AIQuotaExceededError
+
+        with (
+            patch("storage.runs.create_run", new_callable=AsyncMock),
+            patch("storage.runs.start_step", new_callable=AsyncMock),
+            patch("storage.runs.finish_step", new_callable=AsyncMock) as mock_finish,
+            patch("storage.runs.patch_run", new_callable=AsyncMock) as mock_patch,
+            patch("storage.runs.get_run", new_callable=AsyncMock, return_value={"steps": [{"key": "analyze", "status": "running"}]}),
+            patch("integrations.discord.post_run_started", new_callable=AsyncMock, return_value=""),
+            patch("integrations.discord.post_ai_quota_exceeded_report", new_callable=AsyncMock, return_value="alert-id") as mock_alert,
+            patch("claude.analyzer.ai_reachable", return_value=True),
+            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, side_effect=AIQuotaExceededError("rate_limit_error: 429 Too Many Requests")),
+        ):
+            # Must NOT raise — the safe wrapper catches AIQuotaExceededError.
+            asyncio.run(_run_pipeline_safe(_make_event()))
+
+        mock_alert.assert_called_once()
+
+        failed_steps = [c for c in mock_finish.call_args_list if c.args[1] == "analyze" and c.kwargs.get("status") == "failed"]
+        assert failed_steps
+        assert "quota" in failed_steps[-1].kwargs["error"].lower()
+
+        failed_patches = [c for c in mock_patch.call_args_list if c.kwargs.get("status") == "failed"]
+        assert failed_patches
 
 
 # ---------------------------------------------------------------------------
@@ -1237,6 +1468,44 @@ class TestDualAIClientSadFlow:
 
         assert "billing" in str(wrapped).lower()
 
+    def test_raises_quota_exceeded_when_all_providers_hit_rate_or_usage_limits(self):
+        from claude.client import AIQuotaExceededError, DualAIClient
+
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
+
+        with (
+            patch.object(c, "_generate_kimi", side_effect=RuntimeError("429 rate_limit_exceeded: too many requests")),
+            patch.object(c, "_generate_claude", side_effect=RuntimeError("rate_limit_error: usage limit exceeded for this month")),
+        ):
+            with pytest.raises(AIQuotaExceededError):
+                c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
+
+    def test_quota_error_not_masked_by_unconfigured_fallback_provider(self):
+        from claude.client import AIQuotaExceededError, DualAIClient
+
+        # Only Anthropic is configured. "kimi" is still tried as a fallback and
+        # immediately fails with "not configured" — that must not hide the real
+        # rate-limit error Claude returned first.
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="")
+
+        with patch.object(c, "_generate_claude", side_effect=RuntimeError("rate_limit_error: 429 Too Many Requests")):
+            with pytest.raises(AIQuotaExceededError):
+                c.create(model="claude-sonnet-4-20250514", system="sys", messages=[{"role": "user", "content": "hi"}])
+
+    def test_non_quota_errors_are_not_wrapped_as_quota_exceeded(self):
+        from claude.client import AIQuotaExceededError, DualAIClient
+
+        c = DualAIClient(anthropic_api_key="ant-key", kimi_api_key="kimi-key")
+
+        with (
+            patch.object(c, "_generate_kimi", side_effect=RuntimeError("Kimi down")),
+            patch.object(c, "_generate_claude", side_effect=RuntimeError("Claude down")),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                c.create(model="kimi-1.0", system="sys", messages=[{"role": "user", "content": "hi"}])
+
+        assert not isinstance(exc_info.value, AIQuotaExceededError)
+
 
 # ---------------------------------------------------------------------------
 # SECTION 6 — Run lifecycle store (storage/runs.py)
@@ -1250,10 +1519,10 @@ class TestRunsStore:
         db = AsyncMongoMockClient()["aria_test"]
         return patch("storage.runs._get_db", return_value=db)
 
-    def _event(self):
+    def _event(self, repo_name="org/app"):
         from webhook.models import GitHubPushEvent
         return GitHubPushEvent(
-            event_type="push", repo_name="org/app", branch="main", author="dev",
+            event_type="push", repo_name=repo_name, branch="main", author="dev",
             commit_messages=["feat: x"], changed_files=["a.py"], diff_summary="d",
         )
 
@@ -1296,6 +1565,18 @@ class TestRunsStore:
         with self._db_patch():
             assert asyncio.run(runs.get_run("nope")) is None
 
+    def test_list_runs_filters_by_repo_and_list_repos(self):
+        from storage import runs
+        with self._db_patch():
+            asyncio.run(runs.create_run("r4", self._event("org/app")))
+            asyncio.run(runs.create_run("r5", self._event("org/other")))
+            app_runs = asyncio.run(runs.list_runs(repo="org/app"))
+            other_runs = asyncio.run(runs.list_runs(repo="org/other"))
+            repos = asyncio.run(runs.list_repos())
+        assert {r["run_id"] for r in app_runs} == {"r4"}
+        assert {r["run_id"] for r in other_runs} == {"r5"}
+        assert set(repos) == {"org/app", "org/other"}
+
 
 # ---------------------------------------------------------------------------
 # SECTION 7 — Dashboard read API (api/router.py)
@@ -1311,6 +1592,18 @@ class TestDashboardAPI:
             r = self._client().get("/api/runs")
         assert r.status_code == 200
         assert r.json()["runs"][0]["run_id"] == "a"
+
+    def test_list_runs_passes_repo_filter_through(self):
+        with patch("storage.runs.list_runs", new_callable=AsyncMock, return_value=[]) as mock_list:
+            r = self._client().get("/api/runs?repo=org/app")
+        assert r.status_code == 200
+        mock_list.assert_called_once_with(limit=20, skip=0, repo="org/app")
+
+    def test_list_repos(self):
+        with patch("storage.runs.list_repos", new_callable=AsyncMock, return_value=["org/app", "org/other"]):
+            r = self._client().get("/api/repos")
+        assert r.status_code == 200
+        assert r.json()["repos"] == ["org/app", "org/other"]
 
     def test_get_run_found(self):
         with patch("storage.runs.get_run", new_callable=AsyncMock, return_value={"run_id": "a", "status": "completed"}):

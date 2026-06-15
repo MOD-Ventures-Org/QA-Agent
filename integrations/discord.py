@@ -228,6 +228,39 @@ async def post_ai_unavailable_report(event: GitHubPushEvent, reason: str) -> str
     return await _post_embeds([embed])
 
 
+async def post_ai_quota_exceeded_report(event: GitHubPushEvent, run_id: str, link: str, reason: str) -> str:
+    """Post a focused alert when an AI provider reports a token/usage/quota limit
+    error, so the team can top up credits or wait out the rate limit before re-running."""
+    if not settings.discord_enabled:
+        logger.info("Discord posting disabled — skipping AI quota-exceeded alert")
+        return ""
+    if not settings.discord_webhook_url:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping AI quota-exceeded alert")
+        return ""
+
+    latest_commit = (event.commit_messages[-1].splitlines()[0] if event.commit_messages else "N/A")
+    fields = [
+        {"name": "Repository", "value": event.repo_name, "inline": True},
+        {"name": "Branch", "value": event.branch or "N/A", "inline": True},
+        {"name": "Event", "value": event.event_type, "inline": True},
+        {"name": "Pushed by", "value": event.author or "unknown", "inline": True},
+        {"name": "Run ID", "value": run_id, "inline": True},
+        {"name": "Commit", "value": latest_commit[:200], "inline": False},
+        {"name": "Reason", "value": reason[:500], "inline": False},
+        {"name": "Result", "value": "The pipeline stopped early because an AI provider reported a token/usage/quota limit. Check your API plan/billing and re-run once resolved.", "inline": False},
+    ]
+    if link:
+        fields.append({"name": "🔗 View run", "value": f"[Open dashboard]({link})", "inline": False})
+
+    embed = {
+        "title": "🚫 ARIA stopped — AI usage limit / quota exceeded",
+        "color": COLOR_RED,
+        "fields": fields,
+        "footer": {"text": f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} · ARIA"},
+    }
+    return await _post_embeds([embed])
+
+
 async def _post_embeds(embeds: list) -> str:
     payload = {"embeds": embeds}
     for attempt in range(3):

@@ -6,6 +6,7 @@ from config import settings
 from utils.logger import get_logger
 from webhook.models import GitHubPushEvent
 from claude.analyzer import TestPlan
+from claude.report_writer import BugReport, plain_title
 from testing.result_parser import TestResult
 
 logger = get_logger(__name__)
@@ -14,13 +15,29 @@ PRIORITY_MAP = {"critical": 1, "high": 2, "medium": 3, "low": 4}
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 
 
+def _bug_items_markdown(result: TestResult, bug_report: BugReport) -> str:
+    lines = []
+    for i, failure in enumerate(result.failure_details, start=1):
+        test_name = failure.get("name", "unknown")
+        item = bug_report.item_for(test_name) if bug_report else None
+        title = (item.title if item and item.title else plain_title(test_name))
+        description = (
+            item.description if item and item.description
+            else f"This automated check failed. {failure.get('error', '')[:200]}"
+        )
+        lines.append(f"- [ ] **{i}. {title}**\n    {description}")
+    return "\n".join(lines)
+
+
 async def file_bug_tickets(
     run_id: str,
     event: GitHubPushEvent,
     test_plan: TestPlan,
     result: TestResult,
-    bug_summary: str,
+    bug_report: BugReport,
 ) -> List[str]:
+    """Create a single ClickUp task listing every failing test from this run,
+    instead of one ticket per failure (which spammed the list)."""
     if not settings.clickup_enabled:
         logger.info("ClickUp posting disabled by configuration — skipping ticket creation")
         return []
@@ -29,37 +46,38 @@ async def file_bug_tickets(
         logger.info("ClickUp credentials not set — skipping ticket creation")
         return []
 
-    task_ids = []
+    if not result.failure_details:
+        return []
+
     headers = {"Authorization": settings.clickup_api_token, "Content-Type": "application/json"}
     priority = PRIORITY_MAP.get(test_plan.priority, 3)
     url = f"{CLICKUP_API_BASE}/list/{settings.clickup_list_id}/task"
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        for failure in result.failure_details:
-            test_name = failure.get("name", "unknown")
-            error_msg = failure.get("error", "")
-            payload = {
-                "name": f"[ARIA] {test_name} failed on {event.repo_name}/{event.branch}",
-                "description": (
-                    f"**Error:** {error_msg}\n\n"
-                    f"**Bug Summary:** {bug_summary}\n\n"
-                    f"**Run ID:** {run_id}\n"
-                    f"**Branch:** {event.branch}\n"
-                    f"**Author:** {event.author}"
-                ),
-                "priority": priority,
-                "tags": ["aria", "automated", event.repo_name.split("/")[-1]],
-            }
-            try:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                task_id = response.json().get("id", "")
-                task_ids.append(task_id)
-                logger.info(f"ClickUp task created: {task_id} for {test_name}")
-            except Exception as e:
-                logger.error(f"ClickUp ticket creation failed for {test_name}: {e}")
+    count = len(result.failure_details)
+    summary = (bug_report.summary if bug_report and bug_report.summary else f"{count} automated test(s) failed.")
+    payload = {
+        "name": f"[ARIA] {count} failing test(s) — {event.repo_name}/{event.branch}"[:255],
+        "description": (
+            f"{summary}\n\n"
+            f"**Repository:** {event.repo_name}\n"
+            f"**Branch:** {event.branch}\n"
+            f"**Run ID:** {run_id}\n\n"
+            f"{_bug_items_markdown(result, bug_report)}"
+        ),
+        "priority": priority,
+        "tags": ["aria", "automated", event.repo_name.split("/")[-1]],
+    }
 
-    return task_ids
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            task_id = response.json().get("id", "")
+            logger.info(f"ClickUp bug ticket created: {task_id} for {count} failing test(s)")
+            return [task_id] if task_id else []
+    except Exception as e:
+        logger.error(f"ClickUp bug ticket creation failed: {e}")
+        return []
 
 
 def _manual_cases_markdown(manual_plan) -> str:

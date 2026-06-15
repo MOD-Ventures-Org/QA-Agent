@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List
 
-from claude.client import DualAIClient
+from claude.client import AIQuotaExceededError, DualAIClient
 
 from config import settings
 from utils.logger import get_logger
@@ -70,6 +70,8 @@ async def generate_manual_tests(event, repo_context=None) -> ManualTestPlan:
         plan = ManualTestPlan(cases=_parse_cases(data))
         logger.info(f"Generated {len(plan.cases)} manual test case(s)")
         return plan
+    except AIQuotaExceededError:
+        raise
     except Exception as e:
         logger.error(f"Manual test generation failed: {e}")
         return ManualTestPlan()

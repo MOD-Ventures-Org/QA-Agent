@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from claude.client import DualAIClient
+from claude.client import AIQuotaExceededError, DualAIClient
 
 from config import settings
 from utils.logger import get_logger
@@ -119,6 +119,8 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
             triggered_by=event.changed_files[:5],
             code=code,
         )
+    except AIQuotaExceededError:
+        raise
     except Exception as e:
         logger.error(f"Test generation failed: {e}")
         return None

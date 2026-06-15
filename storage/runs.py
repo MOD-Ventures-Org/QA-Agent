@@ -105,11 +105,12 @@ async def get_run(run_id: str) -> Optional[dict]:
         return None
 
 
-async def list_runs(limit: int = 20, skip: int = 0) -> List[dict]:
+async def list_runs(limit: int = 20, skip: int = 0, repo: Optional[str] = None) -> List[dict]:
     try:
         db = _get_db()
+        query = {"repo": repo} if repo else {}
         cursor = db[COLLECTION].find(
-            {},
+            query,
             {"steps": 0, "generated_tests": 0, "manual_tests": 0, "test_result": 0},
             sort=[("created_at", -1)],
             skip=skip,
@@ -119,4 +120,14 @@ async def list_runs(limit: int = 20, skip: int = 0) -> List[dict]:
         return [_clean(d) for d in docs]
     except Exception as e:
         logger.error(f"MongoDB list_runs failed: {e}")
+        return []
+
+
+async def list_repos() -> List[str]:
+    try:
+        db = _get_db()
+        repos = await db[COLLECTION].distinct("repo")
+        return sorted(r for r in repos if r)
+    except Exception as e:
+        logger.error(f"MongoDB list_repos failed: {e}")
         return []
