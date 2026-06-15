@@ -14,3 +14,4 @@ build/
 venv/
 aria.log
 ngrok.exe
+server.log
