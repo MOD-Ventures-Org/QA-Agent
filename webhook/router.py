@@ -1,8 +1,12 @@
-"""Webhook receiver for GitHub events.
+"""Webhook receiver for GitHub events (generation half of the hybrid pipeline).
 
-Pipeline: ai_check → clone → analyze → generate tests → generate workflow → push to repo.
-GitHub Actions executes the generated workflow; results are visible in the Actions tab.
-No local test execution, no Discord reporting, no dashboard updates.
+Pipeline: ai_check → clone → fingerprint check → analyze → generate tests →
+push tests + static workflow (once) → mark fingerprint.
+
+The committed workflow (integrations/static_workflow.py) is generic and runs the
+generated tests in GitHub Actions, then POSTs the report back to /webhook/results,
+where the reporting brain (Discord, ClickUp, eval report, dashboard) takes over.
+This module does no test execution and no reporting itself.
 """
 
 import json
@@ -107,8 +111,11 @@ async def _run_pipeline(event: GitHubPushEvent):
     from claude.analyzer import analyze_event, ai_reachable
     from claude.repo_context import build_repo_context
     from claude.test_generator import generate_tests
-    from claude.workflow_generator import generate_workflow, ARIA_COMMIT_MARKER
+    from claude.workflow_generator import ARIA_COMMIT_MARKER
     from integrations.github_push import push_files_to_branch
+    from integrations.static_workflow import STATIC_WORKFLOW_PATH, STATIC_WORKFLOW_CONTENT
+    from integrations.conftest_template import CONFTEST_PATH, CONFTEST_CONTENT
+    from storage import fingerprints
 
     run_id = str(uuid.uuid4())[:8]
     logger.info(
@@ -129,6 +136,17 @@ async def _run_pipeline(event: GitHubPushEvent):
     logger.info("run_id=%s repo_type=%s cloned=%s", run_id, repo_context.repo_type, repo_context.cloned)
 
     try:
+        # 2b. Skip regeneration if we've already produced tests for this exact diff.
+        #     Saves the analyze + generate AI calls on reopened PRs / identical re-pushes.
+        fingerprint = fingerprints.compute_fingerprint(event, repo_context)
+        seen = await fingerprints.is_seen(event.repo_name, event.branch, fingerprint)
+        if seen:
+            logger.info(
+                "run_id=%s diff fingerprint %s already generated (%s) — reusing committed tests, GitHub Actions will re-run them",
+                run_id, fingerprint, seen.get("test_file", "?"),
+            )
+            return
+
         # 3. Analyze the change: decide whether to test and what kind of tests fit.
         test_plan = await analyze_event(event, repo_context)
         logger.info(
@@ -151,20 +169,15 @@ async def _run_pipeline(event: GitHubPushEvent):
             run_id, len(generated_tests.test_names), generated_tests.file_name,
         )
 
-        # 5. Generate a GitHub Actions workflow YAML customized to this repo and change.
-        generated_workflow = await generate_workflow(event, test_plan, generated_tests, repo_context)
-        if not generated_workflow:
-            logger.error("run_id=%s workflow generation failed — aborting", run_id)
-            return
-        logger.info("run_id=%s generated workflow %s", run_id, generated_workflow.filename)
-
-        # 6. Push the test file + workflow to the branch.
-        #    GitHub Actions picks them up automatically; results appear in the Actions tab.
+        # 5. Push the generated test file + the static ARIA workflow.
+        #    The workflow is generic and committed once (idempotent push skips it when
+        #    unchanged); GitHub Actions runs the tests and POSTs results to /webhook/results.
         files_to_push = {
             f"testing/suites/generated/{generated_tests.file_name}": generated_tests.code,
-            generated_workflow.filename: generated_workflow.content,
+            CONFTEST_PATH: CONFTEST_CONTENT,
+            STATIC_WORKFLOW_PATH: STATIC_WORKFLOW_CONTENT,
         }
-        commit_msg = f"chore(aria): tests + workflow for run {run_id} [{ARIA_COMMIT_MARKER}]"
+        commit_msg = f"chore(aria): generated tests for run {run_id} [{ARIA_COMMIT_MARKER}]"
 
         if not settings.github_token:
             logger.error("run_id=%s GITHUB_TOKEN not configured — cannot push to repo", run_id)
@@ -175,6 +188,10 @@ async def _run_pipeline(event: GitHubPushEvent):
             settings.github_token, commit_message=commit_msg,
         )
         if pushed:
+            # Record the fingerprint so an identical future diff skips regeneration.
+            await fingerprints.mark(
+                event.repo_name, event.branch, fingerprint, generated_tests.file_name
+            )
             logger.info(
                 "run_id=%s pushed %d file(s) to %s@%s — GitHub Actions will run the tests",
                 run_id, len(files_to_push), event.repo_name, event.branch,

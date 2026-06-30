@@ -24,6 +24,16 @@ def parse_pytest_json(report_path: str) -> TestResult:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
+    return parse_pytest_dict(data)
+
+
+def parse_pytest_dict(data: dict) -> TestResult:
+    """Parse an already-loaded pytest-json-report dict into a TestResult.
+
+    Used both by the local file reader above and by the ARIA ``/results`` callback,
+    which receives the report inline in the POST body from GitHub Actions.
+    """
+    data = data or {}
     summary = data.get("summary", {})
     total = summary.get("total")
     passed = summary.get("passed")

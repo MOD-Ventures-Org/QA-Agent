@@ -39,9 +39,13 @@ def _changed_files_section(repo_context) -> str:
 
 def analyzer_user_prompt(event: GitHubPushEvent, repo_context=None, repo_type: str = "unknown") -> str:
     readme = getattr(repo_context, "readme", "") if repo_context else ""
+    claude_md = getattr(repo_context, "claude_md", "") if repo_context else ""
     file_tree = getattr(repo_context, "file_tree", "") if repo_context else ""
 
     readme_section = f"\n\n## README (excerpt)\n{readme}" if readme else ""
+    conventions_section = (
+        f"\n\n## Repo conventions (from CLAUDE.md — follow these)\n{claude_md}" if claude_md else ""
+    )
     tree_section = f"\n\n## File tree\n{file_tree}" if file_tree else ""
 
     return f"""Event type: {event.event_type}
@@ -55,7 +59,7 @@ Changed files:
 {chr(10).join(f'  - {f}' for f in event.changed_files) or '  (none)'}
 
 Commit messages:
-{chr(10).join(f'  - {m}' for m in event.commit_messages) or '  (none)'}{readme_section}{tree_section}
+{chr(10).join(f'  - {m}' for m in event.commit_messages) or '  (none)'}{readme_section}{conventions_section}{tree_section}
 
 ## Changed file contents
 {_changed_files_section(repo_context)}
@@ -95,12 +99,17 @@ def test_generator_user_prompt(
     test_kind: str = "mixed",
     focus_areas: list | None = None,
     affected_pages: list | None = None,
+    conventions: str = "",
 ) -> str:
     files_section = "\n\n".join(
         f"### {path}\n```\n{content}\n```"
         for path, content in file_contents.items()
     )
     context_section = f"\n\n## Product Context\n{product_context}" if product_context else ""
+    conventions_section = (
+        f"\n\n## Repo conventions (from CLAUDE.md — follow these when writing tests)\n{conventions}"
+        if conventions else ""
+    )
     focus = ", ".join(focus_areas or []) or "N/A"
     pages = ", ".join(affected_pages or []) or "N/A"
     return f"""Repository type: {repo_type}
@@ -112,7 +121,7 @@ Changed/new files that need test coverage:
 {chr(10).join(f'  - {f}' for f in changed_files)}
 
 File contents:
-{files_section or '(contents not available — use diff context)'}{context_section}
+{files_section or '(contents not available — use diff context)'}{context_section}{conventions_section}
 
 Generate a complete {test_kind} test file covering the above changes for this {repo_type} repository.
 Name each test function clearly so it describes what user behaviour it verifies."""

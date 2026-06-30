@@ -75,6 +75,9 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
         logger.info("Product context loaded from PRODUCT_CONTEXT.md")
 
     repo_type = getattr(repo_context, "repo_type", "unknown")
+    conventions = getattr(repo_context, "claude_md", "") or ""
+    if conventions:
+        logger.info("Target repo CLAUDE.md loaded — generated tests will follow its conventions")
     logger.info(f"Generating {test_plan.test_kind} tests for a {repo_type} repo")
 
     try:
@@ -94,6 +97,7 @@ async def generate_tests(event: GitHubPushEvent, test_plan: TestPlan, repo_conte
                         test_kind=test_plan.test_kind,
                         focus_areas=test_plan.focus_areas,
                         affected_pages=test_plan.affected_pages,
+                        conventions=conventions,
                     ),
                 }
             ],

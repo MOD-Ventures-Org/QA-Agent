@@ -8,6 +8,7 @@ import runtime
 from config import settings
 from utils.logger import get_logger
 from webhook.router import router as webhook_router
+from webhook.results_router import router as results_router
 from api.router import router as api_router
 
 logger = get_logger(__name__)
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ARIA — Autonomous Regression & Intelligence Agent", lifespan=lifespan)
 
 app.include_router(webhook_router)
+app.include_router(results_router)
 app.include_router(api_router)
 
 if FRONTEND_DIR.is_dir():

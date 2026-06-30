@@ -31,6 +31,7 @@ FRONTEND_FILE_SIGNALS = (
 IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".pytest_cache"}
 
 MAX_README_CHARS = 4000
+MAX_CLAUDE_MD_CHARS = 4000
 MAX_FILE_CHARS = 3000
 MAX_TREE_ENTRIES = 200
 MAX_TREE_DEPTH = 3
@@ -41,6 +42,7 @@ MAX_CHANGED_FILES = 8
 class RepoContext:
     repo_type: str = "unknown"  # "backend" | "frontend" | "unknown"
     readme: str = ""
+    claude_md: str = ""         # target repo's CLAUDE.md — testing conventions for the generator
     file_tree: str = ""
     changed_file_contents: Dict[str, str] = field(default_factory=dict)
     cloned: bool = False
@@ -87,6 +89,19 @@ def _read_readme(root: Path) -> str:
         if path.is_file():
             try:
                 return path.read_text(encoding="utf-8", errors="ignore")[:MAX_README_CHARS]
+            except Exception:
+                return ""
+    return ""
+
+
+def _read_claude_md(root: Path) -> str:
+    """Read the target repo's CLAUDE.md (testing conventions, architecture rules)
+    so generated tests follow the repo's documented practices."""
+    for name in ("CLAUDE.md", "claude.md", "Claude.md", ".claude/CLAUDE.md"):
+        path = root / name
+        if path.is_file():
+            try:
+                return path.read_text(encoding="utf-8", errors="ignore")[:MAX_CLAUDE_MD_CHARS]
             except Exception:
                 return ""
     return ""
@@ -140,6 +155,7 @@ def build_repo_context(event, github_token: str = "") -> RepoContext:
         ctx = RepoContext(
             repo_type=detect_repo_type(event.repo_name, top_level + list(event.changed_files)),
             readme=_read_readme(root),
+            claude_md=_read_claude_md(root),
             file_tree=_build_tree(root),
             changed_file_contents=_read_changed_files(root, event.changed_files),
             cloned=True,
@@ -167,6 +183,7 @@ def build_repo_context(event, github_token: str = "") -> RepoContext:
     ctx = RepoContext(
         repo_type=detect_repo_type(event.repo_name, top_level + list(event.changed_files)),
         readme=_read_readme(root),
+        claude_md=_read_claude_md(root),
         file_tree=_build_tree(root),
         changed_file_contents=_read_changed_files(root, event.changed_files),
         cloned=True,

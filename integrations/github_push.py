@@ -57,12 +57,27 @@ async def push_files_to_branch(
         for path, content in files.items():
             url = f"{_GITHUB_API}/repos/{repo_name}/contents/{path}"
 
-            # Fetch the current file's SHA so GitHub allows updating it.
+            # Fetch the current file's SHA so GitHub allows updating it, and its
+            # content so we can skip a no-op commit when nothing changed (avoids
+            # an extra Actions run on every webhook for an identical file).
             sha: Optional[str] = None
             try:
                 r = await http.get(url, headers=headers, params={"ref": branch})
                 if r.status_code == 200:
-                    sha = r.json().get("sha")
+                    existing = r.json()
+                    sha = existing.get("sha")
+                    try:
+                        existing_content = base64.b64decode(
+                            existing.get("content", "")
+                        ).decode("utf-8", "ignore")
+                        if existing_content == content:
+                            logger.info(
+                                "GitHub push: %s unchanged on %s@%s — skipping commit",
+                                path, repo_name, branch,
+                            )
+                            continue
+                    except Exception:
+                        pass  # fall through to the PUT on any decode issue
             except Exception as exc:
                 logger.debug("Could not fetch SHA for %s: %s", path, exc)
 

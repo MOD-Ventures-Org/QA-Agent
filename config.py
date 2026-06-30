@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     kimi_model: str = Field("moonshot-v1-8k", env="KIMI_MODEL")
     kimi_api_url: str = Field("https://api.moonshot.ai/v1/chat/completions", env="KIMI_API_URL")
     webhook_secret: str = Field(..., env="WEBHOOK_SECRET")
+    aria_callback_token: str = Field("", env="ARIA_CALLBACK_TOKEN")
     discord_webhook_url: str = Field("", env="DISCORD_WEBHOOK_URL")
     discord_enabled: bool = Field(False, env="DISCORD_ENABLED")
     clickup_enabled: bool = Field(False, env="CLICKUP_ENABLED")

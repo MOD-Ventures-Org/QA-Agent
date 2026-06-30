@@ -22,18 +22,26 @@ pytest tests/ -v
 
 ## Architecture
 
-**ARIA** is a FastAPI webhook server that listens for GitHub events, uses Claude AI to analyze the change, generates customized tests and a GitHub Actions workflow, then pushes both back to the branch so GitHub Actions executes them. Results appear in the GitHub Actions tab — there is no local test execution.
+**ARIA** is a hybrid QA agent. The **generation half** (FastAPI webhook server) clones the pushed repo, uses Claude to generate change-specific tests, and commits them plus a generic static workflow back to the branch. GitHub Actions runs those tests **in the runner** and POSTs the JSON report back to ARIA's `/webhook/results` endpoint. The **reporting half** (the "brain") turns that report into a product evaluation, manual test cases, Discord notifications, ClickUp tickets, MongoDB persistence, and a dashboard run.
 
-### Pipeline flow (`webhook/router.py → _run_pipeline`)
+This keeps per-event test *execution* in the cloud (cheap, no infra) while ARIA only regenerates tests when the diff is genuinely new, and the static workflow is committed once instead of regenerated every event.
+
+### Generation pipeline (`webhook/router.py → _run_pipeline`)
 
 Each accepted GitHub event triggers this sequence in a background task:
 
 1. **ai_check** — DNS check that `api.anthropic.com` is reachable before doing anything
 2. **clone** — shallow-clones the pushed repo to a temp dir (`claude/repo_context.py`); skips clone in CI when `GITHUB_WORKSPACE` is set
-3. **analyze** — Claude reads the README, file tree, and changed files to produce a `TestPlan` (`should_test`, `test_kind`, `focus_areas`, `priority`)
-4. **generate** — Claude writes pytest/Playwright test code specific to the change → `testing/suites/generated/`
-5. **generate_workflow** — Claude writes `.github/workflows/aria_generated_tests.yml` tailored to this repo's runtime and test kind (`claude/workflow_generator.py`)
-6. **push_to_repo** — pushes the test file + workflow to the branch via GitHub Contents API (`integrations/github_push.py`); GitHub Actions picks them up automatically
+3. **fingerprint check** — hashes `(repo, branch, changed files + contents)` (`storage/fingerprints.py`); if this exact diff was already generated, skip the AI calls entirely (the committed tests still re-run in Actions)
+4. **analyze** — Claude reads the README, file tree, and changed files to produce a `TestPlan`
+5. **generate** — Claude writes pytest/Playwright test code specific to the change → `testing/suites/generated/`
+6. **push + mark** — pushes the test file + the static workflow (`integrations/static_workflow.py`) via the GitHub Contents API (idempotent — skips unchanged files), then records the fingerprint
+
+The per-event workflow generator (`claude/workflow_generator.py`) is retained but no longer called by the pipeline; the workflow is now static.
+
+### Reporting brain (`webhook/results.py`, mounted at `/webhook/results`)
+
+The static workflow POSTs `{repo, branch, event, sha, actor, run_url, report}` back here (auth: `X-Aria-Token` vs `ARIA_CALLBACK_TOKEN`). `process_results` parses the pytest report and runs: `evaluate_product` → `write_bug_report` → `generate_manual_tests` → Discord post → ClickUp tickets → MongoDB persistence → dashboard `runs` record. Each AI call degrades gracefully (quota errors are logged, not fatal).
 
 `repo_context.cleanup()` always runs in a `finally` block. MongoDB errors are swallowed and logged — they never abort the pipeline.
 
@@ -54,23 +62,22 @@ Only these GitHub events enter the pipeline; everything else returns `status: sk
 
 Each AI module (`analyzer`, `workflow_generator`, `test_generator`, `evaluator`, `manual_tests`, `report_writer`) instantiates its own `DualAIClient` at module load time using `config.settings`.
 
-### Generated workflow
+### Static workflow (`integrations/static_workflow.py`)
 
-`claude/workflow_generator.py` asks Claude to produce a minimal `.github/workflows/aria_generated_tests.yml`. The prompt provides repo type, test kind, focus areas, README, and file tree. Claude is instructed to:
-- Only add `pip install` / `npm install` steps if the corresponding dependency file exists in the file tree
-- Add `playwright install chromium` only for `ui` or `mixed` test kinds
-- Run: `pytest testing/suites/generated/{test_file} -v --timeout=120 --tb=short --json-report --json-report-file=aria_report.json`
-- Upload `aria_report.json` as artifact `aria-test-report`
+A single generic `.github/workflows/aria_generated_tests.yml`, committed once. It runs everything in `testing/suites/generated/`, uploads `aria_report.json` as the `aria-test-report` artifact, and POSTs the report to `$ARIA_CALLBACK_URL/webhook/results`. Dedup ("don't run every time") lives here:
+- `paths:` — only fire when source files or generated tests change
+- `concurrency: cancel-in-progress` — supersede stale runs on the same ref (the PR `synchronize` storm)
+- `if:` — a PR can opt out with the `aria-skip` label
 
-Accidental markdown fences are stripped from Claude's output with regex before the YAML is pushed.
+Target repos must define two secrets: `ARIA_CALLBACK_URL` (ARIA's public/ngrok URL) and `ARIA_CALLBACK_TOKEN` (must match ARIA's `ARIA_CALLBACK_TOKEN`).
 
 ### CI mode (`scripts/run_ci_pipeline.py`)
 
 Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_extract_event` / `_run_pipeline_safe` directly — bypasses the HTTP server entirely. The workflow at `.github/workflows/aria.yml` installs ARIA from `RamaishaRehman/QA-Agent` into a target repo's workflow and invokes this script.
 
-### Storage / dashboard (retained but not used by the active pipeline)
+### Storage / dashboard
 
-`storage/runs.py`, `api/router.py`, and `frontend/` still exist and serve a live dashboard at `/ui`. The current pipeline does **not** write to the `runs` collection — these are available for future use. `storage/mongo.py` contains `save_pipeline_output` for writing consolidated JSON to `pipeline_outputs`.
+`storage/runs.py`, `api/router.py`, and `frontend/` serve a live dashboard at `/ui`. The **reporting brain** (`webhook/results.py`) writes to the `runs` collection (per-run dashboard record), plus `test_runs`, `bug_reports`, `manual_tests`, and the consolidated `pipeline_outputs` via `storage/mongo.py`. The generation pipeline writes `test_fingerprints` (`storage/fingerprints.py`).
 
 ## Key configuration (`.env`)
 
@@ -82,6 +89,7 @@ Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_
 | `KIMI_API_KEY` | Kimi/Moonshot (fallback provider) |
 | `GITHUB_TOKEN` | Cloning private repos **and** pushing generated files back (requires `contents: write`) |
 | `WEBHOOK_SECRET` | GitHub webhook HMAC signature validation |
+| `ARIA_CALLBACK_TOKEN` | Shared secret verifying `/webhook/results` callbacks (must match the target repo's `ARIA_CALLBACK_TOKEN` secret) |
 | `DISCORD_ENABLED` / `DISCORD_WEBHOOK_URL` | Discord integration (not used by the active pipeline) |
 | `CLICKUP_ENABLED` / `CLICKUP_API_TOKEN` / `CLICKUP_LIST_ID` | ClickUp integration (not used by the active pipeline) |
 | `MONGODB_URI` | Defaults to `mongodb://localhost:27017` |
