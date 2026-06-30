@@ -87,45 +87,21 @@
     function RunList() {
       const [runs, setRuns] = useState(null);
       const [err, setErr] = useState(null);
-      const [repos, setRepos] = useState([]);
-      const [repo, setRepo] = useState(qs.get("repo") || "");
-
-      useEffect(() => {
-        getJSON("/api/repos").then(d => setRepos(d.repos || [])).catch(() => {});
-      }, []);
 
       useEffect(() => {
         let alive = true;
-        const url = "/api/runs?limit=50" + (repo ? "&repo=" + encodeURIComponent(repo) : "");
-        const load = () => getJSON(url)
+        const load = () => getJSON("/api/runs?limit=50")
           .then(d => alive && setRuns(d.runs)).catch(e => alive && setErr(String(e)));
         setRuns(null);
         load();
         const t = setInterval(load, 5000);
         return () => { alive = false; clearInterval(t); };
-      }, [repo]);
+      }, []);
 
-      const onRepoChange = (e) => {
-        const value = e.target.value;
-        setRepo(value);
-        const url = new URL(location.href);
-        if (value) url.searchParams.set("repo", value); else url.searchParams.delete("repo");
-        history.replaceState(null, "", url);
-      };
-
-      const filter = html`<div style="margin-bottom:12px">
-        <label class="muted" style="margin-right:8px">Repository</label>
-        <select onChange=${onRepoChange} value=${repo}>
-          <option value="">All repositories</option>
-          ${repos.map(r => html`<option key=${r} value=${r}>${r}</option>`)}
-        </select>
-      </div>`;
-
-      if (err) return html`<div>${filter}<div class="panel">Failed to load runs: ${err}</div></div>`;
-      if (!runs) return html`<div>${filter}<div class="panel muted">Loading…</div></div>`;
-      if (!runs.length) return html`<div>${filter}<div class="panel muted">No runs yet${repo ? ` for ${repo}` : ""}.</div></div>`;
+      if (err) return html`<div class="panel">Failed to load runs: ${err}</div>`;
+      if (!runs) return html`<div class="panel muted">Loading…</div>`;
+      if (!runs.length) return html`<div class="panel muted">No runs yet.</div>`;
       return html`<div>
-        ${filter}
         <div class="panel">
         <h2>Recent runs</h2>
         <table><thead><tr>

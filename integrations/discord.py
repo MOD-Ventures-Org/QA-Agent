@@ -261,6 +261,43 @@ async def post_ai_quota_exceeded_report(event: GitHubPushEvent, run_id: str, lin
     return await _post_embeds([embed])
 
 
+async def post_workflow_run_report(event: GitHubPushEvent) -> str:
+    """Post a compact Discord embed when a GitHub Actions workflow_run finishes."""
+    if not settings.discord_enabled:
+        logger.info("Discord posting disabled — skipping workflow run report")
+        return ""
+    if not settings.discord_webhook_url:
+        logger.warning("DISCORD_WEBHOOK_URL not set — skipping workflow run report")
+        return ""
+
+    conclusion = (event.workflow_conclusion or "unknown").lower()
+    if conclusion == "success":
+        color = COLOR_GREEN
+        icon = "✅"
+    elif conclusion in ("failure", "timed_out"):
+        color = COLOR_RED
+        icon = "❌"
+    else:
+        color = COLOR_AMBER
+        icon = "⚠️"
+
+    fields = [
+        {"name": "Repository", "value": event.repo_name, "inline": True},
+        {"name": "Branch", "value": event.branch or "N/A", "inline": True},
+        {"name": "Conclusion", "value": f"{icon} {conclusion.title()}", "inline": True},
+    ]
+    if event.workflow_run_url:
+        fields.append({"name": "🔗 View run", "value": f"[Open on GitHub Actions]({event.workflow_run_url})", "inline": False})
+
+    embed = {
+        "title": f"🤖 GH Actions — ARIA Generated Tests completed",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} · ARIA"},
+    }
+    return await _post_embeds([embed])
+
+
 async def _post_embeds(embeds: list) -> str:
     payload = {"embeds": embeds}
     for attempt in range(3):

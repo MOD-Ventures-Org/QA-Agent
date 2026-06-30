@@ -205,6 +205,42 @@ Write a plain-English bug report. Return exactly this JSON shape:
 Include exactly one item per failing test listed above, in the same order."""
 
 
+WORKFLOW_GENERATOR_SYSTEM = """You are a DevOps engineer. Generate a minimal, correct GitHub Actions workflow YAML that runs AI-generated pytest tests in the target repository.
+
+Rules:
+- The workflow name MUST be exactly: "ARIA Generated Tests"
+- Runner: ubuntu-latest, Python 3.11.
+- Only include install steps for dependency files that are PRESENT in the file tree (requirements.txt → pip install; package.json → npm install). Do not add steps for files that don't exist.
+- For test_kind "ui" or "mixed" (frontend): include "playwright install chromium --with-deps".
+- Test command: pytest {TEST_FILE_PATH} -v --timeout=120 --tb=short --json-report --json-report-file=aria_report.json
+- Add an upload step using actions/upload-artifact@v4 with name "aria-test-report" pointing to aria_report.json.
+- Do NOT add steps or tools that are not clearly needed.
+- Respond with ONLY valid YAML — no markdown fences, no explanation."""
+
+
+def workflow_generator_user_prompt(event, test_plan, test_file: str, repo_context=None) -> str:
+    repo_type = getattr(repo_context, "repo_type", "unknown") if repo_context else "unknown"
+    readme = (getattr(repo_context, "readme", "") or "")[:1500]
+    file_tree = (getattr(repo_context, "file_tree", "") or "")[:1000]
+    focus = ", ".join(test_plan.focus_areas) if test_plan.focus_areas else "general"
+
+    return f"""Repository: {event.repo_name}
+Branch: {event.branch}
+Repo type: {repo_type}
+Test kind: {test_plan.test_kind}
+Generated test file (relative to repo root): testing/suites/generated/{test_file}
+Focus areas: {focus}
+Priority: {test_plan.priority}
+
+README (truncated):
+{readme or '(not available)'}
+
+File tree (truncated):
+{file_tree or '(not available)'}
+
+Generate the GitHub Actions workflow YAML. The pytest command must point to: testing/suites/generated/{test_file}"""
+
+
 EVALUATOR_SYSTEM = """You are a product quality advisor reporting to a business owner, not a developer.
 Assess whether the product is ready to ship to real customers. Base your judgment on BOTH:
 (1) what the product actually does — read the README and the changed code to understand the feature,

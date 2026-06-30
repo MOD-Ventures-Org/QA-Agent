@@ -30,6 +30,7 @@ def _is_quota_error(exc: Exception) -> bool:
     return any(term in text for term in _QUOTA_ERROR_TERMS)
 
 
+
 class DualAIResponse:
     def __init__(self, text: str):
         self.content = [SimpleNamespace(text=text)]

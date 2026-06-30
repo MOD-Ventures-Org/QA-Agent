@@ -14,6 +14,7 @@ class GitHubPushEvent(BaseModel):
     action: Optional[str] = None
     merged: Optional[bool] = None
     base_branch: Optional[str] = None
+    deployment_state: Optional[str] = None
 
 
 class WebhookPayload(BaseModel):

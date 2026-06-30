@@ -46,14 +46,9 @@ RUN_STEPS = [
     ("ai_check", "AI reachability"),
     ("clone", "Clone repo & read code"),
     ("analyze", "Analyze change"),
-    ("manual_tests", "Generate manual test cases"),
-    ("generate", "Generate tests"),
-    ("run_tests", "Run tests"),
-    ("regression", "Regression check"),
-    ("evaluate", "Product evaluation"),
-    ("persist", "Save to MongoDB"),
-    ("tickets", "Bug summary & tickets"),
-    ("report", "Discord report"),
+    ("generate", "Generate customized tests"),
+    ("generate_workflow", "Generate GH Actions workflow"),
+    ("push_to_repo", "Push tests & workflow to repo"),
 ]
 
 

@@ -49,7 +49,7 @@ class RepoContext:
     def cleanup(self) -> None:
         if self.local_path and os.path.isdir(self.local_path):
             shutil.rmtree(self.local_path, ignore_errors=True)
-        self.local_path = None
+            self.local_path = None
 
 
 def detect_repo_type(repo_name: str, file_names: List[str]) -> str:
@@ -125,9 +125,34 @@ def _read_changed_files(root: Path, changed_files: List[str]) -> Dict[str, str]:
 def build_repo_context(event, github_token: str = "") -> RepoContext:
     """Clone the event's repo/branch and extract README, tree, and changed files.
 
-    Degrades to a payload-only RepoContext (repo_type inferred from name +
-    changed-file names) when cloning is unavailable.
+    In a CI environment (GitHub Actions), reuses the existing workspace checkout
+    instead of cloning. Degrades to a payload-only RepoContext when cloning fails.
     """
+    # GitHub Actions already has the repo checked out — skip the clone.
+    ci_workspace = os.environ.get("GITHUB_WORKSPACE", "")
+    if ci_workspace and os.path.isdir(ci_workspace):
+        logger.info("CI workspace detected at %s — skipping clone", ci_workspace)
+        root = Path(ci_workspace)
+        try:
+            top_level = [p.name for p in root.iterdir()]
+        except Exception:
+            top_level = []
+        ctx = RepoContext(
+            repo_type=detect_repo_type(event.repo_name, top_level + list(event.changed_files)),
+            readme=_read_readme(root),
+            file_tree=_build_tree(root),
+            changed_file_contents=_read_changed_files(root, event.changed_files),
+            cloned=True,
+            local_path=None,  # don't clean up CI workspace
+        )
+        logger.info(
+            "Repo context built from CI workspace: type=%s readme=%dch tree=%d files=%d",
+            ctx.repo_type, len(ctx.readme),
+            ctx.file_tree.count("\n") + 1 if ctx.file_tree else 0,
+            len(ctx.changed_file_contents),
+        )
+        return ctx
+
     dest = tempfile.mkdtemp(prefix="aria_repo_")
     if not _clone(event.repo_name, event.branch, github_token, dest):
         shutil.rmtree(dest, ignore_errors=True)

@@ -106,6 +106,80 @@ async def save_manual_tests(run_id: str, event: GitHubPushEvent, manual_plan) ->
         logger.error(f"MongoDB save_manual_tests failed: {e}")
 
 
+async def save_pipeline_output(
+    run_id: str,
+    event: GitHubPushEvent,
+    test_plan,
+    test_result: TestResult,
+    generated_tests=None,
+    manual_plan=None,
+    evaluation=None,
+    bug_summary: str = "",
+    tickets: Optional[List[dict]] = None,
+    status: str = "completed",
+) -> None:
+    manual_cases = getattr(manual_plan, "cases", None) or []
+    doc = {
+        "run_id": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "event": {
+            "type": event.event_type,
+            "repo": event.repo_name,
+            "branch": event.branch,
+            "author": event.author,
+            "commit_messages": event.commit_messages,
+            "changed_files": event.changed_files,
+            "pr_title": event.pr_title or "",
+        },
+        "test_plan": {
+            "should_test": test_plan.should_test,
+            "test_kind": test_plan.test_kind,
+            "priority": test_plan.priority,
+            "reasoning": test_plan.reasoning,
+            "focus_areas": list(test_plan.focus_areas),
+            "affected_pages": list(test_plan.affected_pages),
+            "pytest_keyword": getattr(test_plan, "pytest_keyword", ""),
+        } if test_plan else None,
+        "generated_tests": {
+            "file_name": generated_tests.file_name,
+            "test_names": list(generated_tests.test_names),
+            "triggered_by": list(generated_tests.triggered_by),
+            "code": generated_tests.code,
+        } if generated_tests else None,
+        "test_result": {
+            "total": test_result.total,
+            "passed": test_result.passed,
+            "failed": test_result.failed,
+            "errors": test_result.errors,
+            "duration": test_result.duration,
+            "regression_detected": test_result.regression_detected,
+            "failure_details": test_result.failure_details,
+            "suite_results": test_result.suite_results,
+        },
+        "manual_tests": [
+            {"title": c.title, "steps": list(c.steps), "expected": c.expected}
+            for c in manual_cases
+        ],
+        "evaluation": {
+            "quality_score": evaluation.quality_score,
+            "grade": evaluation.grade,
+            "recommendation": evaluation.recommendation,
+            "summary": evaluation.summary,
+            "strengths": list(evaluation.strengths),
+            "risks": list(evaluation.risks),
+        } if evaluation else None,
+        "bug_summary": bug_summary,
+        "tickets": tickets or [],
+    }
+    try:
+        db = _get_db()
+        await db["pipeline_outputs"].replace_one({"run_id": run_id}, doc, upsert=True)
+        logger.info(f"Saved pipeline output for run {run_id} to MongoDB")
+    except Exception as e:
+        logger.error(f"MongoDB save_pipeline_output failed: {e}")
+
+
 async def get_recent_runs(repo: str, branch: str, limit: int = 5) -> List[dict]:
     try:
         db = _get_db()
