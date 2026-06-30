@@ -77,7 +77,7 @@ Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_
 
 ### Storage / dashboard
 
-`storage/runs.py`, `api/router.py`, and `frontend/` serve a live dashboard at `/ui`. The **reporting brain** (`webhook/results.py`) writes to the `runs` collection (per-run dashboard record), plus `test_runs`, `bug_reports`, `manual_tests`, and the consolidated `pipeline_outputs` via `storage/mongo.py`. The generation pipeline writes `test_fingerprints` (`storage/fingerprints.py`).
+`storage/runs.py`, `api/router.py`, and `frontend/` serve a live dashboard at `/ui`. The **reporting brain** (`webhook/results.py`) writes to the `runs` collection (per-run dashboard record), plus `test_runs`, `bug_reports`, `manual_tests`, the raw runner output in `ci_reports` (`save_ci_report` — the exact `aria_report.json` + CI metadata), and the consolidated `pipeline_outputs` via `storage/mongo.py`. The generation pipeline writes `test_fingerprints` (`storage/fingerprints.py`).
 
 ## Key configuration (`.env`)
 

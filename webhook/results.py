@@ -30,6 +30,7 @@ async def process_results(payload: dict) -> dict:
     from storage import runs
     from storage.mongo import (
         save_bug_report,
+        save_ci_report,
         save_manual_tests,
         save_pipeline_output,
         save_test_run,
@@ -70,6 +71,8 @@ async def process_results(payload: dict) -> dict:
     )
 
     await runs.create_run(run_id, event)
+    # Persist the raw runner report first, so it's stored even if AI steps fail.
+    await save_ci_report(run_id, payload)
 
     # --- AI-written artifacts (each degrades gracefully; quota errors don't abort) ---
     evaluation = None

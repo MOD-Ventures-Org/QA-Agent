@@ -180,6 +180,30 @@ async def save_pipeline_output(
         logger.error(f"MongoDB save_pipeline_output failed: {e}")
 
 
+async def save_ci_report(run_id: str, payload: dict) -> None:
+    """Store the raw report POSTed back by the GitHub Actions workflow, as-is, in
+    the ``ci_reports`` collection. This is the exact JSON the runner produced
+    (pytest-json-report output + CI metadata) so a dev can inspect it later.
+    """
+    doc = {
+        "run_id": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "repo": payload.get("repo", ""),
+        "branch": payload.get("branch", ""),
+        "event": payload.get("event", ""),
+        "sha": payload.get("sha", ""),
+        "actor": payload.get("actor", ""),
+        "run_url": payload.get("run_url", ""),
+        "report": payload.get("report") or {},
+    }
+    try:
+        db = _get_db()
+        await db["ci_reports"].replace_one({"run_id": run_id}, doc, upsert=True)
+        logger.info(f"Saved CI report for run {run_id} to MongoDB (ci_reports)")
+    except Exception as e:
+        logger.error(f"MongoDB save_ci_report failed: {e}")
+
+
 async def get_recent_runs(repo: str, branch: str, limit: int = 5) -> List[dict]:
     try:
         db = _get_db()
