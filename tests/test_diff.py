@@ -80,6 +80,48 @@ def test_pull_request_event_diffs_against_base_sha(tmp_path, monkeypatch):
     assert changed[0]["path"] == "app.py"
 
 
+def test_deployment_status_event_diffs_against_parent(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    _commit(tmp_path, "app.py", "print('v1')\n", "first")
+    head_sha = _commit(tmp_path, "app.py", "print('v2')\n", "deployed")
+
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "deployment": {"sha": head_sha, "environment": "production"},
+        "deployment_status": {"state": "success"},
+    }))
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "deployment_status")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+
+    changed = diff.get_changed_files(repo_dir=str(tmp_path))
+
+    assert len(changed) == 1
+    assert changed[0]["path"] == "app.py"
+    assert changed[0]["status"] == "M"
+    assert "v2" in changed[0]["patch"]
+
+
+def test_deployment_status_root_commit_uses_empty_tree(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    head_sha = _commit(tmp_path, "app.py", "print('v1')\n", "only commit")
+
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "deployment": {"sha": head_sha, "environment": "production"},
+        "deployment_status": {"state": "failure"},
+    }))
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "deployment_status")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+
+    changed = diff.get_changed_files(repo_dir=str(tmp_path))
+
+    assert len(changed) == 1
+    assert changed[0]["path"] == "app.py"
+    assert changed[0]["status"] == "A"
+
+
 def test_unsupported_event_raises(tmp_path, monkeypatch):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({}))

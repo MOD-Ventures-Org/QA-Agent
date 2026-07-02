@@ -7,8 +7,15 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main, master]
+  # Also run after a deployment finishes, so tests exercise the live env.
+  deployment_status:
 
 jobs:
   aria-qa:
+    # deployment_status fires for every state (pending, in_progress, ...);
+    # only run on terminal ones — success or a failed deploy (failure/error).
+    if: >-
+      github.event_name != 'deployment_status' ||
+      contains(fromJSON('["success", "failure", "error"]'), github.event.deployment_status.state)
     uses: MOD-Ventures-Org/QA-Agent/.github/workflows/qa-pipeline.yml@main
     secrets: inherit

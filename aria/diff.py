@@ -10,7 +10,17 @@ def _load_event():
         return json.load(f)
 
 
-def _base_and_head():
+def _first_parent_or_empty_tree(head, repo_dir):
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"{head}^"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return EMPTY_TREE_SHA
+
+
+def _base_and_head(repo_dir="."):
     event_name = os.environ["GITHUB_EVENT_NAME"]
     event = _load_event()
 
@@ -26,11 +36,21 @@ def _base_and_head():
         head = os.environ["GITHUB_SHA"]
         return base, head
 
+    if event_name == "deployment_status":
+        # Runs after a deployment finishes (success or failure). The payload
+        # carries no "before" ref, so diff the deployed commit against its
+        # parent to get the delta that went live.
+        # ponytail: upgrade to diff against the last successful deployment's
+        # sha (Deployments API) if multi-commit deploys need full coverage.
+        head = event["deployment"]["sha"]
+        base = _first_parent_or_empty_tree(head, repo_dir)
+        return base, head
+
     raise ValueError(f"unsupported event for diffing: {event_name}")
 
 
 def get_changed_files(repo_dir="."):
-    base, head = _base_and_head()
+    base, head = _base_and_head(repo_dir)
 
     status_out = subprocess.run(
         ["git", "diff", "--name-status", base, head],
