@@ -84,6 +84,25 @@
 
     const Badge = ({ status }) => html`<span class=${"badge b-" + status}>${status}</span>`;
 
+    function StaticWorkflow() {
+      const [wf, setWf] = useState(null);
+      const [err, setErr] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        getJSON("/api/static-workflow")
+          .then(d => alive && setWf(d)).catch(e => alive && setErr(String(e)));
+        return () => { alive = false; };
+      }, []);
+      if (err || !wf) return null;
+      return html`<div class="panel">
+        <h2>Static workflow (committed to every target repo)</h2>
+        <details>
+          <summary><code>${wf.path}</code></summary>
+          <pre><code>${wf.content}</code></pre>
+        </details>
+      </div>`;
+    }
+
     function RunList() {
       const [runs, setRuns] = useState(null);
       const [err, setErr] = useState(null);
@@ -101,14 +120,17 @@
       if (err) return html`<div class="panel">Failed to load runs: ${err}</div>`;
       if (!runs) return html`<div class="panel muted">Loading…</div>`;
       if (!runs.length) return html`<div class="panel muted">No runs yet.</div>`;
+      // Pin the Content-engine-automation repo's runs to the top; stable sort keeps newest-first within each group.
+      const isPinned = (repo) => (repo || "").toLowerCase().replace(/[^a-z0-9]/g, "").includes("contentengineautomation");
+      const ordered = [...runs].sort((a, b) => (isPinned(b.repo) ? 1 : 0) - (isPinned(a.repo) ? 1 : 0));
       return html`<div>
         <div class="panel">
         <h2>Recent runs</h2>
         <table><thead><tr>
           <th>Repo</th><th>Branch</th><th>Event</th><th>Status</th><th>Result</th><th>Grade</th><th>When</th>
         </tr></thead><tbody>
-        ${runs.map(r => html`<tr key=${r.run_id}>
-          <td><a href=${"/ui?run=" + r.run_id}>${r.repo}</a></td>
+        ${ordered.map(r => html`<tr key=${r.run_id}>
+          <td><a href=${"/ui?run=" + r.run_id}>${isPinned(r.repo) ? "📌 " : ""}${r.repo}</a></td>
           <td>${r.branch || "—"}</td>
           <td>${r.event_type}</td>
           <td><${Badge} status=${r.status} /></td>
@@ -119,6 +141,7 @@
         </tr>`)}
         </tbody></table>
         </div>
+        <${StaticWorkflow} />
       </div>`;
     }
 
@@ -221,6 +244,7 @@
           <div style="font-size:16px;font-weight:600">${r.repo} <span class="muted">[${r.branch}]</span> <${Badge} status=${r.status} /></div>
           <div class="muted">${r.event_type} · by ${r.author || "unknown"} · ${fmt(r.created_at)}</div>
           ${r.commit ? html`<div class="muted">${r.commit}</div>` : null}
+          ${r.run_url ? html`<div style="margin-top:6px"><a href=${r.run_url} target="_blank">View GitHub Actions run ↗</a></div>` : null}
           ${r.test_plan ? html`<div style="margin-top:8px" class="pill">Plan: should_test=${String(r.test_plan.should_test)} · kind=${r.test_plan.test_kind} · priority=${r.test_plan.priority}</div>` : null}
           ${r.test_plan && r.test_plan.reasoning ? html`<p class="out">${r.test_plan.reasoning}</p>` : null}
         </div>

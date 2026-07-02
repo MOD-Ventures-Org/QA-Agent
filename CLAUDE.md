@@ -18,6 +18,9 @@ python main.py
 
 # Run integration/flow tests (mock-based, no live services needed)
 pytest tests/ -v
+
+# Run a single test
+pytest tests/test_flows.py::<test_name> -v
 ```
 
 ## Architecture
@@ -39,9 +42,15 @@ Each accepted GitHub event triggers this sequence in a background task:
 
 The per-event workflow generator (`claude/workflow_generator.py`) is retained but no longer called by the pipeline; the workflow is now static.
 
+This half **creates the dashboard `runs` record** and drives its first steps live — `clone → analyze → generate → push` — recording each step's output (repo details, the analyzer `TestPlan`, the generated test file + names + code, the pushed files). It stores the commit `sha` on the run and leaves the `actions` step *running* as it hands off to GitHub Actions. The reporting half later attaches to this same run (see below), so one dashboard run shows the whole story end-to-end.
+
+### Unified run timeline
+
+`storage/models.RUN_STEPS` is one 11-step timeline spanning both halves: `clone, analyze, generate, push` (generation) → `actions` (hand-off) → `parse, evaluate, bug_report, manual, notify, persist` (reporting). The generation half creates the run; the reporting half correlates its callback to that run via `runs.find_open_run(repo, branch, sha)` — exact `sha` match first, else the most recent still-`running` run for that repo/branch. If nothing matches (identical-diff skip, or a repo using CI mode), the reporting half creates a fresh run and marks the generation steps `skipped`.
+
 ### Reporting brain (`webhook/results.py`, mounted at `/webhook/results`)
 
-The static workflow POSTs `{repo, branch, event, sha, actor, run_url, report}` back here (auth: `X-Aria-Token` vs `ARIA_CALLBACK_TOKEN`). `process_results` parses the pytest report and runs: `evaluate_product` → `write_bug_report` → `generate_manual_tests` → Discord post → ClickUp tickets → MongoDB persistence → dashboard `runs` record. Each AI call degrades gracefully (quota errors are logged, not fatal).
+The static workflow POSTs `{repo, branch, event, sha, actor, run_url, report}` back here (auth: `X-Aria-Token` vs `ARIA_CALLBACK_TOKEN`). `process_results` **attaches to the generation run** (`find_open_run`), closes the `actions` step, then parses the pytest report and runs: `evaluate_product` → `write_bug_report` → `generate_manual_tests` → Discord post → ClickUp tickets → MongoDB persistence → final dashboard `runs` patch. Each AI call degrades gracefully (quota errors are logged, not fatal) and marks its step `skipped`.
 
 `repo_context.cleanup()` always runs in a `finally` block. MongoDB errors are swallowed and logged — they never abort the pipeline.
 
@@ -73,11 +82,11 @@ Target repos must define two secrets: `ARIA_CALLBACK_URL` (ARIA's public/ngrok U
 
 ### CI mode (`scripts/run_ci_pipeline.py`)
 
-Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_extract_event` / `_run_pipeline_safe` directly — bypasses the HTTP server entirely. The workflow at `.github/workflows/aria.yml` installs ARIA from `RamaishaRehman/QA-Agent` into a target repo's workflow and invokes this script.
+Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_extract_event` / `_run_pipeline_safe` directly — bypasses the HTTP server entirely. The template at `templates/aria.yml` installs ARIA from `RamaishaRehman/QA-Agent` into a target repo's workflow and invokes this script. **This template must be copied into a target repo's `.github/workflows/` — it is deliberately kept out of ARIA's own `.github/workflows/`, because GitHub runs a workflow against whatever repo it lives in (placing it here made ARIA test itself instead of the target repo).**
 
 ### Storage / dashboard
 
-`storage/runs.py`, `api/router.py`, and `frontend/` serve a live dashboard at `/ui`. The **reporting brain** (`webhook/results.py`) writes to the `runs` collection (per-run dashboard record), plus `test_runs`, `bug_reports`, `manual_tests`, the raw runner output in `ci_reports` (`save_ci_report` — the exact `aria_report.json` + CI metadata), and the consolidated `pipeline_outputs` via `storage/mongo.py`. The generation pipeline writes `test_fingerprints` (`storage/fingerprints.py`).
+`storage/runs.py`, `api/router.py`, and `frontend/` serve a live dashboard at `/ui`. The `runs` collection (per-run dashboard record) is **created by the generation pipeline and patched by the reporting brain** — one unified record per event (see "Unified run timeline"). The **reporting brain** (`webhook/results.py`) additionally writes `test_runs`, `bug_reports`, `manual_tests`, the raw runner output in `ci_reports` (`save_ci_report` — the exact `aria_report.json` + CI metadata), and the consolidated `pipeline_outputs` via `storage/mongo.py`. The generation pipeline writes `test_fingerprints` (`storage/fingerprints.py`). The dashboard run-detail view renders the 11-step timeline with per-step outputs, the generated test code, pass/fail results, evaluation, bug summary, and a link to the GitHub Actions run.
 
 ## Key configuration (`.env`)
 
@@ -90,8 +99,8 @@ Reads `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` from the environment, calls `_
 | `GITHUB_TOKEN` | Cloning private repos **and** pushing generated files back (requires `contents: write`) |
 | `WEBHOOK_SECRET` | GitHub webhook HMAC signature validation |
 | `ARIA_CALLBACK_TOKEN` | Shared secret verifying `/webhook/results` callbacks (must match the target repo's `ARIA_CALLBACK_TOKEN` secret) |
-| `DISCORD_ENABLED` / `DISCORD_WEBHOOK_URL` | Discord integration (not used by the active pipeline) |
-| `CLICKUP_ENABLED` / `CLICKUP_API_TOKEN` / `CLICKUP_LIST_ID` | ClickUp integration (not used by the active pipeline) |
+| `DISCORD_ENABLED` / `DISCORD_WEBHOOK_URL` | Discord integration — called by the reporting brain but no-ops unless `DISCORD_ENABLED` is true |
+| `CLICKUP_ENABLED` / `CLICKUP_API_TOKEN` / `CLICKUP_LIST_ID` | ClickUp integration — called by the reporting brain but no-ops unless `CLICKUP_ENABLED` is true |
 | `MONGODB_URI` | Defaults to `mongodb://localhost:27017` |
 | `MONGODB_DB_NAME` | Defaults to `aria` |
 | `BASE_URL_FRONTEND` / `BASE_URL_API` | URLs of the app under test (passed to generated tests) |

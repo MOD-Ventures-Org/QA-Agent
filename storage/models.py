@@ -41,14 +41,26 @@ class RunStep:
         return asdict(self)
 
 
-# Ordered pipeline steps the dashboard renders as a timeline.
+# Ordered pipeline steps the dashboard renders as one end-to-end timeline. The
+# generation half (webhook/router.py) creates the run and drives clone→push; the
+# run then waits on GitHub Actions ("actions"); when the report POSTs back, the
+# reporting half (webhook/results.py) attaches to the SAME run and drives
+# parse→persist. See runs.find_open_run for how the two halves are correlated.
 RUN_STEPS = [
-    ("ai_check", "AI reachability"),
+    # Generation half — clone → analyze → generate → push.
     ("clone", "Clone repo & read code"),
     ("analyze", "Analyze change"),
     ("generate", "Generate customized tests"),
-    ("generate_workflow", "Generate GH Actions workflow"),
-    ("push_to_repo", "Push tests & workflow to repo"),
+    ("push", "Push tests & workflow to repo"),
+    # Hand-off — GitHub Actions runs the committed tests in the cloud.
+    ("actions", "Run tests in GitHub Actions"),
+    # Reporting half — parse → evaluate → bug report → manual → notify → persist.
+    ("parse", "Parse CI test report"),
+    ("evaluate", "Evaluate product quality"),
+    ("bug_report", "Write bug report"),
+    ("manual", "Generate manual test cases"),
+    ("notify", "Send Discord & ClickUp"),
+    ("persist", "Persist results & dashboard"),
 ]
 
 

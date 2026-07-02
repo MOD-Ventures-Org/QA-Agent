@@ -72,6 +72,19 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
     if event_type == "deployment_status":
         deployment_state = payload.get("deployment_status", {}).get("state")
 
+    # Commit SHA — used to correlate this generation run with the later results
+    # callback (which reports $GITHUB_SHA) so both halves land on one dashboard run.
+    sha = ""
+    if event_type == "push":
+        sha = payload.get("after", "") or (payload.get("head_commit") or {}).get("id", "")
+    elif event_type in ("pull_request", "pull_request_review"):
+        sha = payload.get("pull_request", {}).get("head", {}).get("sha", "")
+    elif event_type in ("deployment", "deployment_status"):
+        sha = (
+            payload.get("deployment", {}).get("sha", "")
+            or payload.get("deployment_status", {}).get("deployment", {}).get("sha", "")
+        )
+
     return GitHubPushEvent(
         event_type=event_type,
         repo_name=repo_name,
@@ -80,6 +93,7 @@ def _extract_event(event_type: str, payload: dict) -> GitHubPushEvent:
         commit_messages=commit_messages,
         changed_files=changed_files,
         diff_summary=f"{len(commits)} commit(s) touching {len(changed_files)} file(s)",
+        sha=sha,
         pr_title=pr_title,
         action=payload.get("action"),
         merged=merged,
@@ -109,13 +123,14 @@ async def _run_pipeline(event: GitHubPushEvent):
     import uuid
     from config import settings
     from claude.analyzer import analyze_event, ai_reachable
+    from claude.client import AIQuotaExceededError
     from claude.repo_context import build_repo_context
     from claude.test_generator import generate_tests
     from claude.workflow_generator import ARIA_COMMIT_MARKER
     from integrations.github_push import push_files_to_branch
     from integrations.static_workflow import STATIC_WORKFLOW_PATH, STATIC_WORKFLOW_CONTENT
     from integrations.conftest_template import CONFTEST_PATH, CONFTEST_CONTENT
-    from storage import fingerprints
+    from storage import fingerprints, runs
 
     run_id = str(uuid.uuid4())[:8]
     logger.info(
@@ -123,17 +138,31 @@ async def _run_pipeline(event: GitHubPushEvent):
         run_id, event.repo_name, event.branch, event.event_type,
     )
 
+    # Create the dashboard run up front so the generation half is visible live; the
+    # reporting half later attaches to this same run (see webhook/results.py).
+    await runs.create_run(run_id, event)
+
     # 1. Verify the AI service is reachable before doing any work.
+    await runs.start_step(run_id, "clone")
     if not ai_reachable():
         logger.error(
             "run_id=%s AI service unreachable — skipping pipeline for %s [%s]",
             run_id, event.repo_name, event.branch,
         )
+        await runs.finish_step(run_id, "clone", status="failed", error="AI service unreachable")
+        await runs.patch_run(run_id, status="failed")
         return
 
     # 2. Clone the repo and extract README / file tree / changed-file contents.
     repo_context = build_repo_context(event, settings.github_token)
     logger.info("run_id=%s repo_type=%s cloned=%s", run_id, repo_context.repo_type, repo_context.cloned)
+    await runs.finish_step(
+        run_id, "clone",
+        output=(
+            f"repo_type={repo_context.repo_type} · cloned={repo_context.cloned} · "
+            f"{len(event.changed_files)} changed file(s): {', '.join(event.changed_files[:8]) or '—'}"
+        ),
+    )
 
     try:
         # 2b. Skip regeneration if we've already produced tests for this exact diff.
@@ -145,33 +174,68 @@ async def _run_pipeline(event: GitHubPushEvent):
                 "run_id=%s diff fingerprint %s already generated (%s) — reusing committed tests, GitHub Actions will re-run them",
                 run_id, fingerprint, seen.get("test_file", "?"),
             )
+            note = f"identical diff already generated ({seen.get('test_file', '?')}) — reusing committed tests"
+            for key in ("analyze", "generate", "push"):
+                await runs.finish_step(run_id, key, status="skipped", output=note)
+            await runs.start_step(run_id, "actions")  # committed tests still re-run in Actions
             return
 
         # 3. Analyze the change: decide whether to test and what kind of tests fit.
+        await runs.start_step(run_id, "analyze")
         test_plan = await analyze_event(event, repo_context)
         logger.info(
             "run_id=%s should_test=%s test_kind=%s priority=%s reasoning=%s",
             run_id, test_plan.should_test, test_plan.test_kind,
             test_plan.priority, test_plan.reasoning[:100],
         )
+        await runs.finish_step(
+            run_id, "analyze",
+            output=f"should_test={test_plan.should_test} · kind={test_plan.test_kind} · priority={test_plan.priority}",
+        )
+        await runs.patch_run(run_id, test_plan={
+            "should_test": test_plan.should_test,
+            "test_kind": test_plan.test_kind,
+            "priority": test_plan.priority,
+            "reasoning": test_plan.reasoning,
+        })
 
         if not test_plan.should_test:
             logger.info("run_id=%s change not worth testing — pipeline complete", run_id)
+            for key in ("generate", "push", "actions"):
+                await runs.finish_step(run_id, key, status="skipped", output="change not worth testing")
+            await runs.patch_run(run_id, status="completed")
             return
 
         # 4. Generate pytest/Playwright tests customized to the actual code change.
+        await runs.start_step(run_id, "generate")
         generated_tests = await generate_tests(event, test_plan, repo_context)
         if not generated_tests:
             logger.error("run_id=%s test generation failed — aborting", run_id)
+            await runs.finish_step(run_id, "generate", status="failed", error="test generation failed")
+            await runs.patch_run(run_id, status="failed")
             return
         logger.info(
             "run_id=%s generated %d test(s) in %s",
             run_id, len(generated_tests.test_names), generated_tests.file_name,
         )
+        await runs.finish_step(
+            run_id, "generate",
+            output=(
+                f"{generated_tests.file_name}: {len(generated_tests.test_names)} test(s)"
+                + (f" — {', '.join(generated_tests.test_names)}" if generated_tests.test_names else "")
+            ),
+        )
+        await runs.patch_run(run_id, generated_tests={
+            "file_name": generated_tests.file_name,
+            "test_names": list(generated_tests.test_names),
+            "triggered_by": list(generated_tests.triggered_by),
+            "code": generated_tests.code,
+        })
 
         # 5. Push the generated test file + the static ARIA workflow.
         #    The workflow is generic and committed once (idempotent push skips it when
         #    unchanged); GitHub Actions runs the tests and POSTs results to /webhook/results.
+        await runs.start_step(run_id, "push")
         files_to_push = {
             f"testing/suites/generated/{generated_tests.file_name}": generated_tests.code,
             CONFTEST_PATH: CONFTEST_CONTENT,
@@ -181,6 +245,8 @@ async def _run_pipeline(event: GitHubPushEvent):
 
         if not settings.github_token:
             logger.error("run_id=%s GITHUB_TOKEN not configured — cannot push to repo", run_id)
+            await runs.finish_step(run_id, "push", status="failed", error="GITHUB_TOKEN not configured")
+            await runs.patch_run(run_id, status="failed")
             return
 
         pushed = await push_files_to_branch(
@@ -196,11 +262,25 @@ async def _run_pipeline(event: GitHubPushEvent):
                 "run_id=%s pushed %d file(s) to %s@%s — GitHub Actions will run the tests",
                 run_id, len(files_to_push), event.repo_name, event.branch,
             )
+            await runs.finish_step(
+                run_id, "push",
+                output=f"pushed {len(files_to_push)} file(s): test + conftest + {STATIC_WORKFLOW_PATH}",
+            )
+            # Now hand off to GitHub Actions; the results callback finishes this step.
+            await runs.start_step(run_id, "actions")
         else:
             logger.error(
                 "run_id=%s push failed for %s@%s — verify GITHUB_TOKEN has contents:write permission",
                 run_id, event.repo_name, event.branch,
             )
+            await runs.finish_step(run_id, "push", status="failed", error="push failed — check GITHUB_TOKEN contents:write")
+            await runs.patch_run(run_id, status="failed")
+    except AIQuotaExceededError:
+        await runs.patch_run(run_id, status="failed")
+        raise
+    except Exception:
+        await runs.patch_run(run_id, status="failed")
+        raise
     finally:
         repo_context.cleanup()
 

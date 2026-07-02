@@ -10,6 +10,7 @@ class GitHubPushEvent(BaseModel):
     commit_messages: List[str]
     changed_files: List[str]
     diff_summary: str
+    sha: Optional[str] = None
     pr_title: Optional[str] = None
     action: Optional[str] = None
     merged: Optional[bool] = None

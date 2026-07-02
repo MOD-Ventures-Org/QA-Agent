@@ -85,6 +85,15 @@ targets the SPECIFIC code change described — not generic smoke tests. The file
     "api"        -> call endpoints with the `api_client` fixture against `api_base_url`; mark @pytest.mark.api.
     "functional" -> exercise the business logic / integration, using whichever fixtures fit.
     "mixed"      -> combine UI and API tests in the same file with the appropriate markers.
+- For UI (Playwright) tests, unless the Product Context or repo conventions say otherwise:
+    * Prefer resilient locators in this order: get_by_role(name=...), get_by_label(...),
+      get_by_text(...), get_by_test_id(...). Avoid brittle CSS/XPath, nth-child, and class selectors.
+    * Assert with Playwright's auto-waiting API: `from playwright.sync_api import expect` and
+      `expect(locator).to_be_visible()` / `expect(page).to_have_url(...)`. Never use time.sleep().
+    * Navigate with page.goto(f"{base_url}/path"); reproduce the login flow from the Product Context
+      before hitting protected pages.
+- If a "UI Test Conventions" / selector / login section is present in the Product Context or repo
+  conventions, follow it EXACTLY (selectors, test-id attribute, auth steps) — it overrides the defaults above.
 - Cover the happy path, important edge cases, and error/invalid states for the changed behaviour.
 - Focus on the focus_areas and affected_pages provided.
 - Be immediately executable with no modifications.

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # tolerate extra .env keys (e.g. ARIA_CALLBACK_URL used by the target-repo workflow)
 
 
 settings = Settings()

@@ -19,6 +19,14 @@ async def list_repos():
     return {"repos": await runs.list_repos()}
 
 
+@router.get("/static-workflow")
+async def static_workflow():
+    """The generic GitHub Actions workflow ARIA commits to every target repo."""
+    from integrations.static_workflow import STATIC_WORKFLOW_PATH, STATIC_WORKFLOW_CONTENT
+
+    return {"path": STATIC_WORKFLOW_PATH, "content": STATIC_WORKFLOW_CONTENT}
+
+
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
     run = await runs.get_run(run_id)

@@ -29,6 +29,7 @@ async def create_run(run_id: str, event: GitHubPushEvent) -> None:
         "status": "running",
         "repo": event.repo_name,
         "branch": event.branch,
+        "sha": getattr(event, "sha", "") or "",
         "event_type": event.event_type,
         "author": event.author,
         "commit": latest_commit,
@@ -121,6 +122,31 @@ async def list_runs(limit: int = 20, skip: int = 0, repo: Optional[str] = None) 
     except Exception as e:
         logger.error(f"MongoDB list_runs failed: {e}")
         return []
+
+
+async def find_open_run(repo: str, branch: str, sha: str = "") -> Optional[str]:
+    """Correlate the reporting callback with the generation run that produced the
+    tests. Prefer an exact commit-sha match; otherwise fall back to the most recent
+    run for this repo/branch still awaiting Actions results (status == "running").
+    Returns the run_id to attach to, or None if there's no open run to reuse.
+    """
+    try:
+        db = _get_db()
+        if sha:
+            doc = await db[COLLECTION].find_one(
+                {"repo": repo, "branch": branch, "sha": sha},
+                sort=[("created_at", -1)],
+            )
+            if doc:
+                return doc["run_id"]
+        doc = await db[COLLECTION].find_one(
+            {"repo": repo, "branch": branch, "status": "running"},
+            sort=[("created_at", -1)],
+        )
+        return doc["run_id"] if doc else None
+    except Exception as e:
+        logger.error(f"MongoDB find_open_run failed: {e}")
+        return None
 
 
 async def list_repos() -> List[str]:

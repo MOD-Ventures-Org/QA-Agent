@@ -133,8 +133,9 @@ class TestWebhookHappyFlow:
         assert r.json()["event"] == "push"
 
     def test_valid_pull_request_event_accepted(self, http_client, webhook_secret):
+        # Only opened/synchronize/reopened PRs targeting main/master are processed.
         with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
-            r = _post_webhook(http_client, _pr_payload(), "pull_request", webhook_secret)
+            r = _post_webhook(http_client, _pr_payload(action="opened", base="main"), "pull_request", webhook_secret)
         assert r.status_code == 200
         assert r.json()["status"] == "accepted"
 
@@ -208,7 +209,8 @@ class TestWebhookSadFlow:
 # ---------------------------------------------------------------------------
 
 class TestWebhookTriggerGate:
-    """Pipeline runs only on merged PRs, pushes to main/master, and deploy/release."""
+    """Pipeline runs only on PRs opened/synchronized/reopened into main/master,
+    pushes to main/master, and successful deployments."""
 
     def test_push_to_feature_branch_skipped(self, http_client, webhook_secret):
         r = _post_webhook(http_client, _push_payload(branch="feature/x"), "push", webhook_secret)
@@ -223,10 +225,15 @@ class TestWebhookTriggerGate:
         r = _post_webhook(http_client, _pr_payload(merged=False), "pull_request", webhook_secret)
         assert r.json()["status"] == "skipped"
 
-    def test_merged_pr_accepted(self, http_client, webhook_secret):
+    def test_opened_pr_into_main_accepted(self, http_client, webhook_secret):
         with patch("webhook.router._run_pipeline", new_callable=AsyncMock):
-            r = _post_webhook(http_client, _pr_payload(merged=True, base="develop"), "pull_request", webhook_secret)
+            r = _post_webhook(http_client, _pr_payload(action="opened", base="main"), "pull_request", webhook_secret)
         assert r.json()["status"] == "accepted"
+
+    def test_pr_into_non_main_skipped(self, http_client, webhook_secret):
+        # Even an opened PR is skipped when it doesn't target main/master.
+        r = _post_webhook(http_client, _pr_payload(action="opened", base="develop"), "pull_request", webhook_secret)
+        assert r.json()["status"] == "skipped"
 
     def test_merged_pr_into_main_skipped_to_avoid_duplicate(self, http_client, webhook_secret):
         # Merging into main also fires a push-to-main event; process that one only.
@@ -258,9 +265,9 @@ class TestWebhookTriggerGate:
 
 
 class TestEventExtraction:
-    """Author, branch, and commit must populate for deployment/release payloads."""
+    """Author and branch must populate for deployment payloads (deployments carry no commits)."""
 
-    def test_deployment_populates_author_branch_commit(self):
+    def test_deployment_populates_author_and_branch(self):
         from webhook.router import _extract_event
         payload = {
             "repository": {"full_name": "org/api"},
@@ -270,7 +277,8 @@ class TestEventExtraction:
         event = _extract_event("deployment", payload)
         assert event.author == "Haider-MOD"
         assert event.branch == "Staging"
-        assert event.commit_messages == ["Worked on the Bugs & KYC form."]
+        # A deployment payload has no commits array, so commit_messages stays empty.
+        assert event.commit_messages == []
 
     def test_push_uses_head_commit_when_no_commits(self):
         from webhook.router import _extract_event
@@ -1131,269 +1139,238 @@ def _dummy_repo_context():
     return RepoContext(repo_type="backend", cloned=False)
 
 
-class TestPipelineHappyFlow:
-    """All tests pass — no bug report, no ClickUp tickets, Discord gets a green embed."""
-
-    @pytest.fixture(autouse=True)
-    def _stub_repo_clone(self):
-        # Prevent the pipeline from attempting a real git clone or AI call during tests,
-        # and treat the AI service as reachable. Run-tracking writes are stubbed too.
-        from claude.manual_tests import ManualTestPlan
-        with (
-            patch("claude.analyzer.ai_reachable", return_value=True),
-            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
-            patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
-            _stub_run_tracking(),
-        ):
-            yield
-
-    def test_pipeline_completes_when_all_tests_pass(self):
-        from webhook.router import _run_pipeline
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_clickup,
-            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="discord-msg-id"),
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
-            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock),
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        # No failures → bug report, bug ticket, and manual ticket must NOT be created
-        mock_bug.assert_not_called()
-        mock_clickup.assert_not_called()
-        mock_manual_ticket.assert_not_called()
-
-    def test_pipeline_saves_run_to_mongo(self):
-        from webhook.router import _run_pipeline
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345") as mock_save,
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock),
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value=""),
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        mock_save.assert_called_once()
+def _generated_summary():
+    from claude.test_generator import GeneratedTestSummary
+    return GeneratedTestSummary(
+        file_name="test_auth_20260101_000000.py",
+        test_names=["test_login", "test_logout"],
+        triggered_by=["api/auth.py"],
+        code="def test_login():\n    assert True\n",
+    )
 
 
-class TestPipelineSadFlow:
-    """Failures in one stage must not crash the whole pipeline."""
+def _results_payload(report=None, **overrides):
+    payload = {
+        "repo": "org/repo",
+        "branch": "main",
+        "event": "workflow_run",
+        "sha": "abc1234",
+        "actor": "dev",
+        "run_url": "https://github.com/org/repo/actions/runs/1",
+        "report": report or {},
+    }
+    payload.update(overrides)
+    return payload
 
-    @pytest.fixture(autouse=True)
-    def _stub_repo_clone(self):
-        from claude.manual_tests import ManualTestPlan
-        with (
-            patch("claude.analyzer.ai_reachable", return_value=True),
-            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
-            patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
-            _stub_run_tracking(),
-        ):
-            yield
 
-    def test_creates_bug_report_and_clickup_when_tests_fail(self):
-        # Regular failures should still generate a bug summary and ClickUp tickets, with Discord reporting the result.
-        from webhook.router import _run_pipeline
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=_failing_test_result()),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_failing_test_result()),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_cu,
-            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock, return_value="cu-manual") as mock_manual_ticket,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
-            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock),
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        mock_bug.assert_called_once()
-        mock_cu.assert_called_once()
-        mock_manual_ticket.assert_called_once()  # bugs present → manual ticket filed
-        mock_discord.assert_called_once()
-        mock_save_bug.assert_called_once()
-
-    def test_pipeline_survives_discord_failure(self):
-        # _run_pipeline_safe is the real background task — it catches all exceptions
-        # so the webhook never crashes even when Discord is down.
-        from webhook.router import _run_pipeline_safe
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock),
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, side_effect=Exception("Discord 500")),
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
-        ):
-            # Must NOT raise — safe wrapper absorbs the Discord exception
-            asyncio.run(_run_pipeline_safe(_make_event()))
-
-    def test_pipeline_survives_mongodb_failure(self):
-        from webhook.router import _run_pipeline_safe
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=_passing_test_result()),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, side_effect=Exception("Mongo down")),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_clickup,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
-        ):
-            # Must NOT raise — safe wrapper absorbs the MongoDB exception and still posts to Discord
-            asyncio.run(_run_pipeline_safe(_make_event()))
-
-        mock_discord.assert_called_once()
-        mock_clickup.assert_not_called()
-
-    def test_discord_receives_report_with_failure_count(self):
-        # Discord is always called; it receives the real failure count even with a bug summary.
-        from webhook.router import _run_pipeline
-
-        result = _failing_test_result()
-
-        with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=result),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=result),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="abc12345"),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock),
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock),
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="msg-123") as mock_discord,
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock),
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        mock_discord.assert_called_once()
-        # Verify the result passed to Discord has the correct failure count
-        call_args = mock_discord.call_args
-        passed_result = call_args.args[3]  # (run_id, event, test_plan, result, ...)
-        assert passed_result.failed == 2
-
-    def test_errored_run_reports_to_discord_only(self):
-        # errors > 0 (tests couldn't run reliably): Discord report only —
-        # no MongoDB save and no ClickUp tickets.
-        from webhook.router import _run_pipeline
-        from claude.report_writer import BugReport
-        from testing.result_parser import TestResult
-
-        errored = TestResult(
-            total=1, passed=0, failed=0, errors=1,
-            failure_details=[{"name": "timeout", "error": "pytest timed out", "traceback": ""}],
+@contextlib.contextmanager
+def _stub_reporting(result, evaluation=None, manual=None, bug_report=None):
+    """Patch every collaborator the reporting brain (process_results) calls, so the
+    test exercises the orchestration without MongoDB, Discord, ClickUp, or the AI."""
+    from claude.manual_tests import ManualTestPlan
+    from claude.report_writer import BugReport
+    manual = manual if manual is not None else ManualTestPlan()
+    bug_report = bug_report if bug_report is not None else BugReport(summary="bug summary")
+    with contextlib.ExitStack() as stack:
+        def p(target, **kw):
+            return stack.enter_context(patch(target, **kw))
+        mocks = SimpleNamespace(
+            parse=p("testing.result_parser.parse_pytest_dict", return_value=result),
+            evaluate=p("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=evaluation),
+            bug=p("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value=bug_report),
+            manual=p("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=manual),
+            bug_ticket=p("integrations.clickup.file_bug_tickets", new_callable=AsyncMock, return_value=["cu-bug"]),
+            manual_ticket=p("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock, return_value="cu-manual"),
+            discord=p("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="msg-1"),
+            save_test_run=p("storage.mongo.save_test_run", new_callable=AsyncMock, return_value="rid12345"),
+            save_ci=p("storage.mongo.save_ci_report", new_callable=AsyncMock),
+            save_manual=p("storage.mongo.save_manual_tests", new_callable=AsyncMock),
+            save_bug=p("storage.mongo.save_bug_report", new_callable=AsyncMock),
+            save_output=p("storage.mongo.save_pipeline_output", new_callable=AsyncMock),
+            find_open=p("storage.runs.find_open_run", new_callable=AsyncMock, return_value=None),
+            create_run=p("storage.runs.create_run", new_callable=AsyncMock),
+            start_step=p("storage.runs.start_step", new_callable=AsyncMock),
+            finish_step=p("storage.runs.finish_step", new_callable=AsyncMock),
+            patch_run=p("storage.runs.patch_run", new_callable=AsyncMock),
         )
+        yield mocks
+
+
+class TestGenerationPipeline:
+    """Generation half (webhook/router.py): ai check -> clone -> fingerprint ->
+    analyze -> generate -> push tests + static workflow. No test execution,
+    evaluation, or reporting happens here."""
+
+    @pytest.fixture(autouse=True)
+    def _stub(self):
         with (
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
-            patch("claude.test_generator.generate_tests", new_callable=AsyncMock),
-            patch("testing.runner.run_tests", new_callable=AsyncMock, return_value=errored),
-            patch("testing.regression_watcher.check_regression", new_callable=AsyncMock, return_value=errored),
-            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value=BugReport(summary="error summary")),
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock) as mock_save,
-            patch("storage.mongo.save_manual_tests", new_callable=AsyncMock) as mock_save_manual,
-            patch("storage.mongo.save_bug_report", new_callable=AsyncMock) as mock_save_bug,
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_bug_ticket,
-            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="msg") as mock_report,
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        mock_report.assert_called_once()       # Discord report IS shown
-        mock_save.assert_not_called()          # NOT saved to MongoDB
-        mock_save_manual.assert_not_called()
-        mock_save_bug.assert_not_called()
-        mock_bug_ticket.assert_not_called()    # NO ClickUp tickets
-        mock_manual_ticket.assert_not_called()
-
-
-class TestPipelineAIUnavailable:
-    """When the AI service is unreachable, the pipeline does nothing except post one alert."""
-
-    def test_skips_all_work_and_posts_single_alert(self):
-        from webhook.router import _run_pipeline
-
-        with (
-            _stub_run_tracking(),
-            patch("claude.analyzer.ai_reachable", return_value=False),
-            patch("claude.repo_context.build_repo_context") as mock_clone,
-            patch("testing.runner.run_tests", new_callable=AsyncMock) as mock_run,
-            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock) as mock_bug,
-            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock) as mock_bug_ticket,
-            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock) as mock_manual_ticket,
-            patch("storage.mongo.save_test_run", new_callable=AsyncMock) as mock_save,
-            patch("integrations.discord.post_discord_report", new_callable=AsyncMock) as mock_report,
-            patch("integrations.discord.post_ai_unavailable_report", new_callable=AsyncMock, return_value="alert-id") as mock_alert,
-        ):
-            asyncio.run(_run_pipeline(_make_event()))
-
-        mock_alert.assert_called_once()        # one concise alert only
-        mock_clone.assert_not_called()         # no repo clone
-        mock_run.assert_not_called()           # no tests
-        mock_bug.assert_not_called()           # no bug summary
-        mock_bug_ticket.assert_not_called()    # no bug tickets
-        mock_manual_ticket.assert_not_called()  # no manual ticket
-        mock_save.assert_not_called()          # nothing saved
-        mock_report.assert_not_called()        # no full report
-
-
-class TestPipelineAIQuotaExceeded:
-    """When an AI provider reports a token/usage/quota limit error mid-run, the
-    run is marked failed (logs + dashboard) and a focused Discord alert is sent."""
-
-    def test_quota_error_marks_run_failed_and_alerts_discord(self):
-        from webhook.router import _run_pipeline_safe
-        from claude.client import AIQuotaExceededError
-
-        with (
+            patch("claude.analyzer.ai_reachable", return_value=True),
+            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
+            patch("storage.fingerprints.compute_fingerprint", return_value="fp-1"),
+            patch("storage.fingerprints.is_seen", new_callable=AsyncMock, return_value=None),
+            patch("storage.fingerprints.mark", new_callable=AsyncMock),
+            # Run-lifecycle writes are stubbed so the generation half doesn't touch Mongo.
             patch("storage.runs.create_run", new_callable=AsyncMock),
             patch("storage.runs.start_step", new_callable=AsyncMock),
-            patch("storage.runs.finish_step", new_callable=AsyncMock) as mock_finish,
-            patch("storage.runs.patch_run", new_callable=AsyncMock) as mock_patch,
-            patch("storage.runs.get_run", new_callable=AsyncMock, return_value={"steps": [{"key": "analyze", "status": "running"}]}),
-            patch("integrations.discord.post_run_started", new_callable=AsyncMock, return_value=""),
-            patch("integrations.discord.post_ai_quota_exceeded_report", new_callable=AsyncMock, return_value="alert-id") as mock_alert,
-            patch("claude.analyzer.ai_reachable", return_value=True),
-            patch("claude.repo_context.build_repo_context", return_value=_dummy_repo_context()),
-            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, side_effect=AIQuotaExceededError("rate_limit_error: 429 Too Many Requests")),
+            patch("storage.runs.finish_step", new_callable=AsyncMock),
+            patch("storage.runs.patch_run", new_callable=AsyncMock),
         ):
-            # Must NOT raise — the safe wrapper catches AIQuotaExceededError.
-            asyncio.run(_run_pipeline_safe(_make_event()))
+            yield
 
-        mock_alert.assert_called_once()
+    def test_generates_and_pushes_when_change_is_testable(self):
+        from webhook.router import _run_pipeline
+        with (
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=_test_plan()),
+            patch("claude.test_generator.generate_tests", new_callable=AsyncMock, return_value=_generated_summary()),
+            patch("integrations.github_push.push_files_to_branch", new_callable=AsyncMock, return_value=True) as mock_push,
+            patch("config.settings.github_token", "tok"),
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
 
-        failed_steps = [c for c in mock_finish.call_args_list if c.args[1] == "analyze" and c.kwargs.get("status") == "failed"]
-        assert failed_steps
-        assert "quota" in failed_steps[-1].kwargs["error"].lower()
+        mock_push.assert_called_once()
+        files = mock_push.call_args.args[2]
+        assert any(path.startswith("testing/suites/generated/") for path in files)
+        assert ".github/workflows/aria_generated_tests.yml" in files
 
-        failed_patches = [c for c in mock_patch.call_args_list if c.kwargs.get("status") == "failed"]
-        assert failed_patches
+    def test_skips_when_change_not_worth_testing(self):
+        from webhook.router import _run_pipeline
+        from claude.analyzer import TestPlan
+        plan = TestPlan(reasoning="docs only", should_test=False)
+        with (
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock, return_value=plan),
+            patch("claude.test_generator.generate_tests", new_callable=AsyncMock) as mock_gen,
+            patch("integrations.github_push.push_files_to_branch", new_callable=AsyncMock) as mock_push,
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
+
+        mock_gen.assert_not_called()
+        mock_push.assert_not_called()
+
+    def test_skips_regeneration_when_fingerprint_already_seen(self):
+        from webhook.router import _run_pipeline
+        with (
+            patch("storage.fingerprints.is_seen", new_callable=AsyncMock, return_value={"test_file": "old.py"}),
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock) as mock_analyze,
+            patch("claude.test_generator.generate_tests", new_callable=AsyncMock) as mock_gen,
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
+
+        mock_analyze.assert_not_called()
+        mock_gen.assert_not_called()
+
+    def test_ai_unreachable_aborts_before_clone(self):
+        from webhook.router import _run_pipeline
+        with (
+            patch("claude.analyzer.ai_reachable", return_value=False),
+            patch("claude.repo_context.build_repo_context") as mock_clone,
+            patch("claude.analyzer.analyze_event", new_callable=AsyncMock) as mock_analyze,
+        ):
+            asyncio.run(_run_pipeline(_make_event()))
+
+        mock_clone.assert_not_called()
+        mock_analyze.assert_not_called()
+
+    def test_safe_wrapper_swallows_generic_error(self):
+        from webhook.router import _run_pipeline_safe
+        with patch("claude.analyzer.analyze_event", new_callable=AsyncMock, side_effect=Exception("boom")):
+            asyncio.run(_run_pipeline_safe(_make_event()))  # must not raise
+
+    def test_safe_wrapper_swallows_quota_error(self):
+        from webhook.router import _run_pipeline_safe
+        from claude.client import AIQuotaExceededError
+        with patch("claude.analyzer.analyze_event", new_callable=AsyncMock, side_effect=AIQuotaExceededError("429 rate_limit")):
+            asyncio.run(_run_pipeline_safe(_make_event()))  # must not raise
+
+
+class TestReportingBrain:
+    """Reporting half (webhook/results.py process_results): parse -> evaluate ->
+    bug report -> manual -> tickets -> Discord -> persist, tracking dashboard steps
+    and degrading gracefully on AI quota / MongoDB errors."""
+
+    def test_passing_run_skips_bug_report_and_bug_ticket(self):
+        from webhook.results import process_results
+        with _stub_reporting(_passing_test_result(), evaluation=_evaluation()) as m:
+            out = asyncio.run(process_results(_results_payload()))
+
+        m.bug.assert_not_called()
+        m.bug_ticket.assert_not_called()
+        m.save_bug.assert_not_called()
+        m.discord.assert_called_once()
+        m.save_test_run.assert_called_once()
+        assert out["failed"] == 0
+
+    def test_failing_run_writes_bug_report_and_files_tickets(self):
+        from webhook.results import process_results
+        with _stub_reporting(_failing_test_result(), evaluation=_evaluation()) as m:
+            out = asyncio.run(process_results(_results_payload()))
+
+        m.bug.assert_called_once()
+        m.bug_ticket.assert_called_once()
+        m.save_bug.assert_called_once()
+        m.discord.assert_called_once()
+        assert out["failed"] == 2
+        # Discord receives the real result object (run_id, event, test_plan, result, ...).
+        assert m.discord.call_args.args[3].failed == 2
+
+    def test_dashboard_steps_are_tracked(self):
+        from webhook.results import process_results
+        with _stub_reporting(_failing_test_result(), evaluation=_evaluation()) as m:
+            asyncio.run(process_results(_results_payload()))
+
+        finished = {c.args[1] for c in m.finish_step.call_args_list}
+        assert {"parse", "evaluate", "bug_report", "manual", "notify", "persist"} <= finished
+        m.patch_run.assert_called()
+
+    def test_quota_error_marks_step_skipped_and_keeps_going(self):
+        from webhook.results import process_results
+        from claude.client import AIQuotaExceededError
+        with _stub_reporting(_failing_test_result()) as m:
+            m.evaluate.side_effect = AIQuotaExceededError("quota exceeded")
+            asyncio.run(process_results(_results_payload()))  # must not raise
+
+        skipped = [
+            c for c in m.finish_step.call_args_list
+            if c.args[1] == "evaluate" and c.kwargs.get("status") == "skipped"
+        ]
+        assert skipped
+        m.discord.assert_called_once()  # pipeline still notifies
+
+    def test_attaches_to_existing_generation_run(self):
+        from webhook.results import process_results
+        with _stub_reporting(_passing_test_result(), evaluation=_evaluation()) as m:
+            m.find_open.return_value = "gen-run-1"
+            out = asyncio.run(process_results(_results_payload()))
+
+        m.create_run.assert_not_called()          # reuse the generation run
+        assert out["run_id"] == "gen-run-1"
+        # the GitHub Actions hand-off step is closed on the existing run
+        assert any(c.args[1] == "actions" for c in m.finish_step.call_args_list)
+
+    def test_survives_mongodb_outage(self):
+        from webhook.results import process_results
+        from claude.manual_tests import ManualTestPlan
+        from claude.report_writer import BugReport
+
+        def boom(*a, **k):
+            raise Exception("Mongo down")
+
+        # Real save_* / runs.* run against a dead _get_db; they swallow internally,
+        # so the brain must still complete and notify.
+        with (
+            patch("testing.result_parser.parse_pytest_dict", return_value=_passing_test_result()),
+            patch("claude.evaluator.evaluate_product", new_callable=AsyncMock, return_value=_evaluation()),
+            patch("claude.report_writer.write_bug_report", new_callable=AsyncMock, return_value=BugReport(summary="x")),
+            patch("claude.manual_tests.generate_manual_tests", new_callable=AsyncMock, return_value=ManualTestPlan()),
+            patch("integrations.clickup.file_bug_tickets", new_callable=AsyncMock, return_value=[]),
+            patch("integrations.clickup.file_manual_test_ticket", new_callable=AsyncMock, return_value=""),
+            patch("integrations.discord.post_discord_report", new_callable=AsyncMock, return_value="") as mock_discord,
+            patch("storage.mongo._get_db", side_effect=boom),
+            patch("storage.runs._get_db", side_effect=boom),
+        ):
+            out = asyncio.run(process_results(_results_payload()))  # must not raise
+
+        assert "run_id" in out
+        mock_discord.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1533,7 +1510,7 @@ class TestRunsStore:
             doc = asyncio.run(runs.get_run("run123"))
         assert doc["run_id"] == "run123"
         assert doc["status"] == "running"
-        assert len(doc["steps"]) == 11
+        assert len(doc["steps"]) == 11  # unified generation + reporting steps (storage/models.RUN_STEPS)
         assert all(s["status"] == "pending" for s in doc["steps"])
         assert "_id" not in doc
 
@@ -1541,12 +1518,12 @@ class TestRunsStore:
         from storage import runs
         with self._db_patch():
             asyncio.run(runs.create_run("r2", self._event()))
-            asyncio.run(runs.start_step("r2", "analyze"))
-            asyncio.run(runs.finish_step("r2", "analyze", output="kind=api"))
+            asyncio.run(runs.start_step("r2", "evaluate"))
+            asyncio.run(runs.finish_step("r2", "evaluate", output="grade=A"))
             doc = asyncio.run(runs.get_run("r2"))
-        step = next(s for s in doc["steps"] if s["key"] == "analyze")
+        step = next(s for s in doc["steps"] if s["key"] == "evaluate")
         assert step["status"] == "done"
-        assert step["output"] == "kind=api"
+        assert step["output"] == "grade=A"
         assert step["started_at"] and step["finished_at"]
 
     def test_patch_and_list(self):
@@ -1564,6 +1541,18 @@ class TestRunsStore:
         from storage import runs
         with self._db_patch():
             assert asyncio.run(runs.get_run("nope")) is None
+
+    def test_find_open_run_matches_sha_then_falls_back(self):
+        from storage import runs
+        with self._db_patch():
+            asyncio.run(runs.create_run("g1", self._event()))
+            asyncio.run(runs.patch_run("g1", sha="deadbeef"))
+            by_sha = asyncio.run(runs.find_open_run("org/app", "main", "deadbeef"))
+            fallback = asyncio.run(runs.find_open_run("org/app", "main", "no-such-sha"))
+            other_repo = asyncio.run(runs.find_open_run("org/other", "main", ""))
+        assert by_sha == "g1"
+        assert fallback == "g1"      # newest still-running run for repo/branch
+        assert other_repo is None
 
     def test_list_runs_filters_by_repo_and_list_repos(self):
         from storage import runs

@@ -1,3 +1,8 @@
+# TEMPLATE — do NOT place this in ARIA's own .github/workflows/.
+# Copy it into a TARGET repo (the app under test) as
+# .github/workflows/aria.yml. GitHub runs a workflow against whatever repo it
+# lives in, so keeping it here made ARIA test itself. In a target repo, the
+# "Checkout target repo" step below checks out that app, and ARIA runs against it.
 name: ARIA QA Pipeline
 
 on:
