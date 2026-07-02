@@ -4,5 +4,7 @@ __pycache__/
 testing/suites/generated/
 results.xml
 *.egg-info/
+build/
+dist/
 .env
 .env.*
