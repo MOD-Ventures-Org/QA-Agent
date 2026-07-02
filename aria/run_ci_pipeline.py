@@ -46,6 +46,11 @@ def main():
         )
 
     print(f"aria: passed={results['passed']} failed={results['failed']}")
+    if results["failed"] > 0:
+        # Fail the check so a required status check holds the merge. Reporting
+        # (ClickUp + Discord) has already run above, so notifications still fire.
+        print("aria: tests failed — failing the check to hold the merge")
+        return 1
     return 0
 
 

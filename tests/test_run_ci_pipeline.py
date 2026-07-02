@@ -34,10 +34,43 @@ def test_main_runs_full_pipeline_and_files_ticket_on_failure(monkeypatch):
 
         exit_code = run_ci_pipeline.main()
 
-    assert exit_code == 0
+    # failures hold the merge: check fails, but reporting still ran
+    assert exit_code == 1
     file_ticket.assert_called_once()
     post_summary.assert_called_once()
     assert post_summary.call_args[0][4] == "https://app.clickup.com/t/999"
+
+
+def test_main_returns_1_on_test_failure_to_hold_merge(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", ".")
+    monkeypatch.setenv("CLICKUP_ENABLED", "False")
+    monkeypatch.setenv("DISCORD_ENABLED", "False")
+
+    changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
+    generated = [{"path": "x.py", "source_file": "app.py", "kind": "backend"}]
+    results = {"passed": 2, "failed": 1, "failures": [{"test": "x::test_fail", "output": "boom"}]}
+
+    with patch("aria.run_ci_pipeline.diff.get_changed_files", return_value=changed), \
+         patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
+         patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
+         patch("aria.run_ci_pipeline.runner.run_tests", return_value=results):
+        assert run_ci_pipeline.main() == 1
+
+
+def test_main_returns_0_when_all_tests_pass(monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", ".")
+    monkeypatch.setenv("CLICKUP_ENABLED", "False")
+    monkeypatch.setenv("DISCORD_ENABLED", "False")
+
+    changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
+    generated = [{"path": "x.py", "source_file": "app.py", "kind": "backend"}]
+    results = {"passed": 3, "failed": 0, "failures": []}
+
+    with patch("aria.run_ci_pipeline.diff.get_changed_files", return_value=changed), \
+         patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
+         patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
+         patch("aria.run_ci_pipeline.runner.run_tests", return_value=results):
+        assert run_ci_pipeline.main() == 0
 
 
 def test_main_skips_clickup_when_disabled(monkeypatch):
@@ -58,6 +91,6 @@ def test_main_skips_clickup_when_disabled(monkeypatch):
 
         exit_code = run_ci_pipeline.main()
 
-    assert exit_code == 0
+    assert exit_code == 1
     file_ticket.assert_not_called()
     post_summary.assert_not_called()

@@ -1,8 +1,13 @@
 # ARIA QA Agent
 
-Drops into any GitHub repo and, on every push/PR: diffs the change, generates
-tests via an LLM, runs them, and reports failures — report-only, never blocks
-a merge.
+Drops into any GitHub repo and, on every push/PR (and after a deployment):
+diffs the change, generates tests via an LLM, runs them, and reports failures.
+On failure it **fails the check and pings Discord**, so a required status check
+holds the merge until the failures are resolved.
+
+> To actually block merges, mark the `aria-qa` check as **required** in the
+> repo's branch protection rule for `main`/`master`. Without that, ARIA still
+> fails the run and notifies, but GitHub won't hard-block the merge.
 
 ## Setup
 

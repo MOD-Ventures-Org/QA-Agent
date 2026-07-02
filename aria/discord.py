@@ -5,9 +5,12 @@ def post_summary(webhook_url, passed, failed, run_url, ticket_url=None):
     if not webhook_url:
         return
 
-    status = "all passed" if failed == 0 else f"{failed} failed"
+    if failed == 0:
+        header = "✅ **ARIA QA run** — all passed"
+    else:
+        header = f"🔴 **ARIA QA FAILED** — {failed} failed · merge held"
     lines = [
-        f"**ARIA QA run** — {status}",
+        header,
         f"passed: {passed}, failed: {failed}",
         f"CI run: {run_url}",
     ]
