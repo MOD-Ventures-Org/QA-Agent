@@ -1,6 +1,24 @@
+import json
 from unittest.mock import patch
 
 from aria import run_ci_pipeline
+
+
+def test_trigger_info_push(monkeypatch):
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert run_ci_pipeline._trigger_info() == "push"
+
+
+def test_trigger_info_deployment_with_state_and_env(tmp_path, monkeypatch):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "deployment": {"sha": "abc", "environment": "production"},
+        "deployment_status": {"state": "failure"},
+    }))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "deployment_status")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+
+    assert run_ci_pipeline._trigger_info() == "deployment (failure) · env: production"
 
 
 def test_main_returns_0_and_skips_when_no_changes(monkeypatch):

@@ -24,6 +24,17 @@ def test_post_summary_includes_ticket_link_when_present():
     assert "https://app.clickup.com/t/999" in content
 
 
+def test_post_summary_shows_trigger_when_present():
+    with patch("aria.discord.requests.post", return_value=Mock()) as post:
+        discord.post_summary(
+            "https://discord.example/webhook", 5, 2, "https://ci/run/1",
+            trigger="deployment (failure) · env: production",
+        )
+
+    content = post.call_args[1]["json"]["content"]
+    assert "triggered by: deployment (failure) · env: production" in content
+
+
 def test_post_summary_noop_without_webhook_url():
     with patch("aria.discord.requests.post") as post:
         discord.post_summary(None, 1, 0, "https://ci/run/1")

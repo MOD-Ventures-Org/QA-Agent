@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -12,6 +13,25 @@ def _run_url():
         os.environ.get("GITHUB_REPOSITORY", ""),
         os.environ.get("GITHUB_RUN_ID", ""),
     )
+
+
+def _trigger_info():
+    """Human-readable description of what triggered this run, for the Discord
+    summary — e.g. "push", "pull_request", or "deployment (failure) · env: prod"."""
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name == "deployment_status":
+        try:
+            with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+                event = json.load(f)
+        except (KeyError, OSError, ValueError):
+            return "deployment"
+        state = event.get("deployment_status", {}).get("state", "unknown")
+        env = event.get("deployment", {}).get("environment")
+        label = f"deployment ({state})"
+        if env:
+            label += f" · env: {env}"
+        return label
+    return event_name or None
 
 
 def main():
@@ -43,6 +63,7 @@ def main():
         discord.post_summary(
             os.environ.get("DISCORD_WEBHOOK_URL"),
             results["passed"], results["failed"], run_url, ticket_url,
+            trigger=_trigger_info(),
         )
 
     print(f"aria: passed={results['passed']} failed={results['failed']}")
