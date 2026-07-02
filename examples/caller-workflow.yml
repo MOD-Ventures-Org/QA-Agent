@@ -10,5 +10,5 @@ on:
 
 jobs:
   aria-qa:
-    uses: RamaishaRehman/QA-Agent/.github/workflows/qa-pipeline.yml@main
+    uses: MOD-Ventures-Org/QA-Agent/.github/workflows/qa-pipeline.yml@master
     secrets: inherit
