@@ -35,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install ARIA
-        run: pip install "git+https://github.com/MOD-Ventures-Org/QA-Agent@master"
+        run: pip install "git+https://github.com/MOD-Ventures-Org/QA-Agent@main"
 
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
