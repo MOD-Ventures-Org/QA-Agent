@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from aria import clickup, context, diff, discord, runner, testgen
+from aria import clickup, context, diff, discord, evaluate, llm, runner, testgen
 
 OUTPUT_DIR = "testing/suites/generated"
 
@@ -34,6 +34,35 @@ def _trigger_info():
     return event_name or None
 
 
+def _is_successful_deployment():
+    if os.environ.get("GITHUB_EVENT_NAME") != "deployment_status":
+        return False
+    try:
+        with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+            event = json.load(f)
+    except (KeyError, OSError, ValueError):
+        return False
+    return event.get("deployment_status", {}).get("state") == "success"
+
+
+def _run_evaluation(changed, ctx, run_url):
+    """Successful-deployment path: produce a product evaluation report + manual
+    test cases and send them to Discord instead of running automated tests."""
+    try:
+        report = evaluate.generate_evaluation(changed, ctx)
+    except llm.LLMError as e:
+        print(f"aria: could not generate evaluation: {e}")
+        return 0
+
+    print("aria: product evaluation report\n" + report)
+    if os.environ.get("DISCORD_ENABLED", "False") == "True":
+        discord.post_evaluation(
+            os.environ.get("DISCORD_WEBHOOK_URL"),
+            report, run_url, trigger=_trigger_info(),
+        )
+    return 0
+
+
 def main():
     repo_dir = os.environ.get("GITHUB_WORKSPACE", ".")
 
@@ -43,13 +72,17 @@ def main():
         return 0
 
     ctx = context.build_context(changed, repo_dir=repo_dir)
+    run_url = _run_url()
+
+    if _is_successful_deployment():
+        return _run_evaluation(changed, ctx, run_url)
+
     generated = testgen.generate_tests(changed, ctx, OUTPUT_DIR)
     if not generated:
         print("aria: no tests generated")
         return 0
 
     results = runner.run_tests(OUTPUT_DIR)
-    run_url = _run_url()
 
     ticket_url = None
     if results["failed"] > 0 and os.environ.get("CLICKUP_ENABLED", "False") == "True":

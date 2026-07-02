@@ -40,3 +40,36 @@ def test_post_summary_noop_without_webhook_url():
         discord.post_summary(None, 1, 0, "https://ci/run/1")
 
     post.assert_not_called()
+
+
+def test_post_evaluation_sends_header_then_report():
+    with patch("aria.discord.requests.post", return_value=Mock()) as post:
+        discord.post_evaluation(
+            "https://discord.example/webhook",
+            "## Product Evaluation Report\nlooks good\n## Manual Test Cases\n1. do x",
+            "https://ci/run/1",
+            trigger="deployment (success) · env: production",
+        )
+
+    contents = [call.kwargs["json"]["content"] for call in post.call_args_list]
+    assert "ARIA Product Evaluation" in contents[0]
+    assert "deployment (success)" in contents[0]
+    assert any("Manual Test Cases" in c for c in contents[1:])
+
+
+def test_post_evaluation_chunks_long_reports_under_limit():
+    long_report = "\n".join(f"line {i} " + "x" * 100 for i in range(200))
+    with patch("aria.discord.requests.post", return_value=Mock()) as post:
+        discord.post_evaluation("https://discord.example/webhook", long_report, "https://ci/run/1")
+
+    # header + at least two report chunks, each within the Discord limit
+    assert post.call_count >= 3
+    for call in post.call_args_list:
+        assert len(call.kwargs["json"]["content"]) <= discord.CONTENT_LIMIT
+
+
+def test_post_evaluation_noop_without_webhook_url():
+    with patch("aria.discord.requests.post") as post:
+        discord.post_evaluation(None, "report", "https://ci/run/1")
+
+    post.assert_not_called()

@@ -9,6 +9,15 @@ holds the merge until the failures are resolved.
 > repo's branch protection rule for `main`/`master`. Without that, ARIA still
 > fails the run and notifies, but GitHub won't hard-block the merge.
 
+## On a successful deployment
+
+When triggered by a `deployment_status` event whose state is **`success`**,
+ARIA switches modes: instead of generating and running automated tests, it asks
+the LLM for a **product evaluation report** (what changed, risks, what to verify
+in the live env) plus **manual test cases** (human-executable steps + expected
+results), and posts them to Discord. A **failed** deployment (or a push/PR) keeps
+the automated-test behavior above.
+
 ## Setup
 
 1. Copy `examples/caller-workflow.yml` into your repo as
