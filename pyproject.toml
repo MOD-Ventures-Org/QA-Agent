@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aria-qa-agent"
+version = "0.1.0"
+description = "ARIA — LLM-driven QA agent that generates and runs tests on CI events."
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "pytest>=8.0",
+    "pytest-playwright>=0.5",
+    "playwright>=1.40",
+]
+
+[project.scripts]
+aria-run = "aria.run_ci_pipeline:main"
+
+[tool.setuptools]
+packages = ["aria"]
