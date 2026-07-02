@@ -1,0 +1,63 @@
+name: ARIA QA Pipeline (reusable)
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      GEMINI_API_KEY:
+        required: true
+      KIMI_API_KEY:
+        required: true
+      DISCORD_WEBHOOK_URL:
+        required: false
+      CLICKUP_API_TOKEN:
+        required: false
+      CLICKUP_LIST_ID:
+        required: false
+      BASE_URL_FRONTEND:
+        required: false
+      BASE_URL_API:
+        required: false
+
+jobs:
+  aria-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ARIA
+        run: pip install "git+https://github.com/RamaishaRehman/QA-Agent@main"
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run ARIA pipeline
+        run: python -m aria.run_ci_pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_ENABLED: ${{ secrets.DISCORD_WEBHOOK_URL != '' && 'True' || 'False' }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          CLICKUP_LIST_ID: ${{ secrets.CLICKUP_LIST_ID }}
+          CLICKUP_ENABLED: ${{ secrets.CLICKUP_API_TOKEN != '' && 'True' || 'False' }}
+          BASE_URL_FRONTEND: ${{ secrets.BASE_URL_FRONTEND }}
+          BASE_URL_API: ${{ secrets.BASE_URL_API }}
+
+      - name: Upload generated tests
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-tests
+          path: testing/suites/generated/
+          if-no-files-found: ignore

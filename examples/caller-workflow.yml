@@ -1,0 +1,14 @@
+# Copy this file into any repo as .github/workflows/aria-qa.yml
+name: ARIA QA
+
+on:
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main, master]
+
+jobs:
+  aria-qa:
+    uses: RamaishaRehman/QA-Agent/.github/workflows/qa-pipeline.yml@main
+    secrets: inherit
