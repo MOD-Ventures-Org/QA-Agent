@@ -54,10 +54,21 @@ def _format_body(failures, run_url, marker):
     lines = [f"{len(failures)} test(s) failed in this run.", f"CI run: {run_url}", "", marker, ""]
     for f in failures:
         lines.append(f"### {f['test']}")
+        summary = f.get("summary")
+        if summary:
+            if summary.get("purpose"):
+                lines.append(f"What this test checks: {summary['purpose']}")
+            if summary.get("steps"):
+                lines.append("Steps: " + " › ".join(summary["steps"]))
+            if summary.get("assertions"):
+                lines.append("Expected: " + "; ".join(summary["assertions"]))
+            lines.append("")
+            lines.append("What went wrong (from the test run):")
         lines.append("```")
         lines.append(f["output"][:2000])
         lines.append("```")
-    return "\n".join(lines)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def file_ticket_for_run(list_id, token, failures, run_url):

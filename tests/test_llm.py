@@ -15,6 +15,17 @@ def _fake_response(json_body, status=200):
     return resp
 
 
+def _rate_limited_response():
+    import requests
+
+    resp = Mock()
+    resp.status_code = 429
+    resp.raise_for_status = Mock(
+        side_effect=requests.HTTPError("429 Too Many Requests", response=resp)
+    )
+    return resp
+
+
 def test_generate_uses_gemini_when_it_succeeds(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a-key")
@@ -72,3 +83,31 @@ def test_generate_raises_when_all_providers_fail(monkeypatch):
 
     with pytest.raises(llm.LLMError):
         llm.generate("write a test")
+
+
+def test_generate_raises_rate_limit_error_when_gemini_and_kimi_are_limited(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("KIMI_API_KEY", "k-key")
+
+    with patch("aria.llm.requests.post", return_value=_rate_limited_response()):
+        with pytest.raises(llm.LLMRateLimitError):
+            llm.generate("write a test")
+
+
+def test_generate_succeeds_via_kimi_even_if_gemini_is_rate_limited(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("KIMI_API_KEY", "k-key")
+
+    kimi_body = {"choices": [{"message": {"content": "kimi test code"}}]}
+
+    def side_effect(url, **kwargs):
+        if "generativelanguage" in url:
+            return _rate_limited_response()
+        return _fake_response(kimi_body)
+
+    with patch("aria.llm.requests.post", side_effect=side_effect):
+        result = llm.generate("write a test")
+
+    assert result == "kimi test code"

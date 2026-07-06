@@ -46,13 +46,13 @@ def test_post_evaluation_sends_header_then_report():
     with patch("aria.discord.requests.post", return_value=Mock()) as post:
         discord.post_evaluation(
             "https://discord.example/webhook",
-            "## Product Evaluation Report\nlooks good\n## Manual Test Cases\n1. do x",
+            "## Manual Test Cases\n1. do x",
             "https://ci/run/1",
             trigger="deployment (success) · env: production",
         )
 
     contents = [call.kwargs["json"]["content"] for call in post.call_args_list]
-    assert "ARIA Product Evaluation" in contents[0]
+    assert "ARIA Manual Test Cases" in contents[0]
     assert "deployment (success)" in contents[0]
     assert any("Manual Test Cases" in c for c in contents[1:])
 
@@ -71,5 +71,36 @@ def test_post_evaluation_chunks_long_reports_under_limit():
 def test_post_evaluation_noop_without_webhook_url():
     with patch("aria.discord.requests.post") as post:
         discord.post_evaluation(None, "report", "https://ci/run/1")
+
+    post.assert_not_called()
+
+
+def test_post_generated_tests_sends_human_readable_summary():
+    generated = [{
+        "path": "testing/suites/generated/test_gen_0_app_py.py",
+        "source_file": "app.py",
+        "kind": "backend",
+        "summary": {
+            "test_name": "test_signup_creates_account",
+            "purpose": "Verifies signing up with a valid email creates an account.",
+            "steps": ["Submit the signup form", "Read the response"],
+            "assertions": ["Response status is 201"],
+        },
+    }]
+
+    with patch("aria.discord.requests.post", return_value=Mock()) as post:
+        discord.post_generated_tests("https://discord.example/webhook", generated, "https://ci/run/1")
+
+    content = post.call_args[1]["json"]["content"]
+    assert "test_signup_creates_account" in content
+    assert "Verifies signing up with a valid email creates an account." in content
+    assert "Submit the signup form" in content
+    assert "Response status is 201" in content
+
+
+def test_post_generated_tests_noop_without_webhook_url_or_tests():
+    with patch("aria.discord.requests.post") as post:
+        discord.post_generated_tests(None, [{"path": "x.py"}], "https://ci/run/1")
+        discord.post_generated_tests("https://discord.example/webhook", [], "https://ci/run/1")
 
     post.assert_not_called()

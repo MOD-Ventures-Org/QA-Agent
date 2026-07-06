@@ -1,14 +1,9 @@
 from aria import llm
 
-EVAL_PROMPT = """You are a senior QA and product analyst reviewing a change that \
-was just successfully deployed to a live environment. Based on the repository \
-context and the deployed changes below, produce a Markdown document with exactly \
-these two sections and nothing else:
-
-## Product Evaluation Report
-- A short summary of what changed and its user-facing impact.
-- Key risks or areas of concern introduced by this change.
-- What should be verified in the live environment before considering the deploy healthy.
+EVAL_PROMPT = """You are a senior QA analyst reviewing a change that was just \
+successfully deployed to a live environment. Based on the repository context and \
+the deployed changes below, produce a Markdown document with exactly this section \
+and nothing else:
 
 ## Manual Test Cases
 A numbered list of manual, human-executable test cases covering the deployed change.
@@ -38,8 +33,8 @@ def _format_changes(changed_files):
 
 
 def generate_evaluation(changed_files, repo_context):
-    """Ask the LLM for a product evaluation report + manual test cases (Markdown)
-    describing a successfully deployed change. Raises llm.LLMError on failure."""
+    """Ask the LLM for manual test cases (Markdown) covering a successfully
+    deployed change. Raises llm.LLMError on failure."""
     readme = repo_context["repo"]["readme"] or "(no README found)"
     prompt = EVAL_PROMPT.format(readme=readme, changes=_format_changes(changed_files))
     return llm.generate(prompt)

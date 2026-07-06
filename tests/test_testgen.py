@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,3 +77,63 @@ def test_generate_tests_skips_when_llm_fails(tmp_path):
         result = testgen.generate_tests(changed_files, repo_context, tmp_path / "generated")
 
     assert result == []
+
+
+def test_generate_tests_writes_human_readable_summary_json(tmp_path):
+    changed_files = [{"path": "app.py", "patch": "+x", "full_content": "x = 1\n"}]
+    repo_context = {"repo": {"readme": None, "manifests": {}}, "files": changed_files}
+    output_dir = tmp_path / "generated"
+
+    raw = (
+        "def test_signup_creates_account():\n    assert True\n"
+        + "\n" + testgen.SUMMARY_MARKER + "\n"
+        + json.dumps({
+            "test_name": "test_signup_creates_account",
+            "purpose": "Verifies signing up with a valid email creates an account.",
+            "steps": ["Submit the signup form", "Read the response"],
+            "assertions": ["Response status is 201", "Response includes a user id"],
+        })
+    )
+
+    with patch("aria.testgen.llm.generate", return_value=raw):
+        result = testgen.generate_tests(changed_files, repo_context, output_dir)
+
+    summary = result[0]["summary"]
+    assert summary["test_name"] == "test_signup_creates_account"
+    assert summary["purpose"].startswith("Verifies signing up")
+    assert summary["steps"] == ["Submit the signup form", "Read the response"]
+    assert summary["assertions"] == ["Response status is 201", "Response includes a user id"]
+
+    json_path = Path(result[0]["path"]).with_suffix(".json")
+    on_disk = json.loads(json_path.read_text())
+    assert on_disk["source_file"] == "app.py"
+    assert on_disk["kind"] == "backend"
+    assert on_disk["test_name"] == "test_signup_creates_account"
+
+
+def test_generate_tests_falls_back_to_default_summary_when_llm_omits_it(tmp_path):
+    changed_files = [{"path": "app.py", "patch": "+x", "full_content": "x = 1\n"}]
+    repo_context = {"repo": {"readme": None, "manifests": {}}, "files": changed_files}
+    output_dir = tmp_path / "generated"
+
+    with patch("aria.testgen.llm.generate", return_value="def test_x():\n    assert True\n"):
+        result = testgen.generate_tests(changed_files, repo_context, output_dir)
+
+    summary = result[0]["summary"]
+    assert summary["test_name"] == "test_x"
+    assert summary["purpose"] is None
+    assert summary["steps"] == []
+    assert summary["assertions"] == []
+
+
+def test_generate_tests_propagates_rate_limit_error(tmp_path):
+    import pytest
+
+    from aria import llm
+
+    changed_files = [{"path": "app.py", "patch": "+x", "full_content": "x = 1\n"}]
+    repo_context = {"repo": {"readme": None, "manifests": {}}, "files": changed_files}
+
+    with patch("aria.testgen.llm.generate", side_effect=llm.LLMRateLimitError("limited")):
+        with pytest.raises(llm.LLMRateLimitError):
+            testgen.generate_tests(changed_files, repo_context, tmp_path / "generated")

@@ -34,6 +34,20 @@ def _trigger_info():
     return event_name or None
 
 
+def _attach_summaries(failures, generated):
+    """Match each failure to the human-readable summary generated alongside its
+    test (by test function name), so ClickUp tickets read in plain English."""
+    summaries_by_name = {
+        g["summary"]["test_name"]: g["summary"]
+        for g in generated
+        if g.get("summary") and g["summary"].get("test_name")
+    }
+    return [
+        {**f, "summary": summaries_by_name.get(f["test"].rsplit("::", 1)[-1])}
+        for f in failures
+    ]
+
+
 def _is_successful_deployment():
     if os.environ.get("GITHUB_EVENT_NAME") != "deployment_status":
         return False
@@ -46,15 +60,15 @@ def _is_successful_deployment():
 
 
 def _run_evaluation(changed, ctx, run_url):
-    """Successful-deployment path: produce a product evaluation report + manual
-    test cases and send them to Discord instead of running automated tests."""
+    """Successful-deployment path: produce manual test cases and send them to
+    Discord instead of running automated tests."""
     try:
         report = evaluate.generate_evaluation(changed, ctx)
     except llm.LLMError as e:
-        print(f"aria: could not generate evaluation: {e}")
+        print(f"aria: could not generate manual test cases: {e}")
         return 0
 
-    print("aria: product evaluation report\n" + report)
+    print("aria: manual test cases\n" + report)
     if os.environ.get("DISCORD_ENABLED", "False") == "True":
         discord.post_evaluation(
             os.environ.get("DISCORD_WEBHOOK_URL"),
@@ -77,10 +91,24 @@ def main():
     if _is_successful_deployment():
         return _run_evaluation(changed, ctx, run_url)
 
-    generated = testgen.generate_tests(changed, ctx, OUTPUT_DIR)
+    try:
+        generated = testgen.generate_tests(changed, ctx, OUTPUT_DIR)
+    except llm.LLMRateLimitError as e:
+        # Gemini/Kimi are rate-limited or out of quota. Hold this run rather than
+        # reporting a false failure: no test run, no Discord post, no ClickUp ticket.
+        # A later trigger will retry once the provider's limit resets.
+        print(f"aria: LLM API limit reached, holding this run: {e}")
+        return 0
+
     if not generated:
         print("aria: no tests generated")
         return 0
+
+    if os.environ.get("DISCORD_ENABLED", "False") == "True":
+        discord.post_generated_tests(
+            os.environ.get("DISCORD_WEBHOOK_URL"),
+            generated, run_url, trigger=_trigger_info(),
+        )
 
     results = runner.run_tests(OUTPUT_DIR)
 
@@ -89,7 +117,8 @@ def main():
         list_id = os.environ.get("CLICKUP_LIST_ID")
         token = os.environ.get("CLICKUP_API_TOKEN")
         if list_id and token:
-            task_id = clickup.file_ticket_for_run(list_id, token, results["failures"], run_url)
+            failures = _attach_summaries(results["failures"], generated)
+            task_id = clickup.file_ticket_for_run(list_id, token, failures, run_url)
             ticket_url = f"https://app.clickup.com/t/{task_id}"
 
     if os.environ.get("DISCORD_ENABLED", "False") == "True":

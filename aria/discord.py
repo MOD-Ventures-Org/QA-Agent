@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import requests
 
 # Discord caps a message's content at 2000 chars; stay under it with a margin.
@@ -50,13 +52,40 @@ def post_summary(webhook_url, passed, failed, run_url, ticket_url=None, trigger=
     _send(webhook_url, "\n".join(lines))
 
 
+def post_generated_tests(webhook_url, generated, run_url, trigger=None):
+    """Post a plain-English summary of each generated test (name, purpose, steps,
+    assertions) so they're reviewable without opening the repo."""
+    if not webhook_url or not generated:
+        return
+
+    lines = ["🧪 **ARIA generated tests**"]
+    if trigger:
+        lines.append(f"triggered by: {trigger}")
+    lines.append(f"CI run: {run_url}")
+
+    for entry in generated:
+        summary = entry.get("summary") or {}
+        name = summary.get("test_name") or Path(entry["path"]).stem
+        lines.append("")
+        lines.append(f"**{name}** ({entry.get('kind', '')}) — {entry.get('source_file', '')}")
+        if summary.get("purpose"):
+            lines.append(summary["purpose"])
+        if summary.get("steps"):
+            lines.append("Steps: " + "; ".join(summary["steps"]))
+        if summary.get("assertions"):
+            lines.append("Checks: " + "; ".join(summary["assertions"]))
+
+    for chunk in _chunks("\n".join(lines), CONTENT_LIMIT):
+        _send(webhook_url, chunk)
+
+
 def post_evaluation(webhook_url, report, run_url, trigger=None):
-    """Post a product evaluation report + manual test cases (Markdown) after a
-    successful deployment. The report is chunked to respect Discord's limit."""
+    """Post manual test cases (Markdown) after a successful deployment. The
+    report is chunked to respect Discord's limit."""
     if not webhook_url:
         return
 
-    header = ["📋 **ARIA Product Evaluation** — successful deployment"]
+    header = ["📋 **ARIA Manual Test Cases** — successful deployment"]
     if trigger:
         header.append(f"triggered by: {trigger}")
     header.append(f"CI run: {run_url}")

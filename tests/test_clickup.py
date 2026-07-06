@@ -45,3 +45,37 @@ def test_file_ticket_for_run_comments_on_existing():
 
     assert task_id == "555"
     comment.assert_called_once()
+
+
+def test_file_ticket_for_run_writes_plain_english_body_when_summary_present():
+    failures = [{
+        "test": "tests/test_x.py::test_signup_creates_account",
+        "output": "AssertionError: assert 500 == 201",
+        "summary": {
+            "test_name": "test_signup_creates_account",
+            "purpose": "Verifies signing up with a valid email creates an account.",
+            "steps": ["Submit the signup form", "Read the response"],
+            "assertions": ["Response status is 201"],
+        },
+    }]
+    with patch("aria.clickup.find_existing_ticket", return_value=None), \
+         patch("aria.clickup.create_ticket", return_value="999") as create:
+        clickup.file_ticket_for_run("list1", "token", failures, "https://ci/run/1")
+
+    body = create.call_args[0][3]
+    assert "What this test checks: Verifies signing up with a valid email creates an account." in body
+    assert "Steps: Submit the signup form › Read the response" in body
+    assert "Expected: Response status is 201" in body
+    assert "What went wrong (from the test run):" in body
+    assert "AssertionError: assert 500 == 201" in body
+
+
+def test_file_ticket_for_run_falls_back_without_summary():
+    failures = [{"test": "tests/test_x.py::test_fail", "output": "boom"}]
+    with patch("aria.clickup.find_existing_ticket", return_value=None), \
+         patch("aria.clickup.create_ticket", return_value="999") as create:
+        clickup.file_ticket_for_run("list1", "token", failures, "https://ci/run/1")
+
+    body = create.call_args[0][3]
+    assert "What this test checks" not in body
+    assert "boom" in body
