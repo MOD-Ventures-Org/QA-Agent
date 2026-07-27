@@ -9,13 +9,20 @@ holds the merge until the failures are resolved.
 > repo's branch protection rule for `main`/`master`. Without that, ARIA still
 > fails the run and notifies, but GitHub won't hard-block the merge.
 
-## On a successful deployment
+## On deployments (Vercel / DigitalOcean)
 
-When triggered by a `deployment_status` event whose state is **`success`**,
-ARIA switches modes: instead of generating and running automated tests, it asks
-the LLM for **manual test cases** (human-executable steps + expected results)
-covering the deployed change, and posts them to Discord. A **failed** deployment
-(or a push/PR) keeps the automated-test behavior above.
+Vercel and DigitalOcean report deploy results to the GitHub repo via
+`deployment_status` events, which ARIA listens for:
+
+- **Successful deployment**: ARIA switches modes — instead of generating and
+  running automated tests, it asks the LLM for **manual test cases**
+  (human-executable steps + expected results) covering the deployed change,
+  and posts them to Discord.
+- **Failed deployment**: ARIA only drops a simple Discord notification that
+  the deployment failed (naming the provider and environment when it can
+  detect them) and does nothing else — no tests, no tickets.
+
+Pushes and PRs keep the automated-test behavior above.
 
 ## Setup
 

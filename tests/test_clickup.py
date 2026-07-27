@@ -35,6 +35,16 @@ def test_file_ticket_for_run_creates_new_when_none_exists():
     title, body = create.call_args[0][2], create.call_args[0][3]
     assert "1 generated test(s) failing" in title
     assert "test_fail" in body
+    # failed generated tests are filed as bugs
+    assert "Bug" in title
+    assert create.call_args[1]["tags"] == ["bug"]
+
+
+def test_create_ticket_sends_bug_tag_in_payload():
+    with patch("aria.clickup.requests.post", return_value=_resp({"id": "999"})) as post:
+        clickup.create_ticket("list1", "token", "title", "desc", tags=["bug"])
+
+    assert post.call_args[1]["json"]["tags"] == ["bug"]
 
 
 def test_file_ticket_for_run_comments_on_existing():

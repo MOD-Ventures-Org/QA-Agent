@@ -29,11 +29,14 @@ def find_existing_ticket(list_id, token, signature):
     return None
 
 
-def create_ticket(list_id, token, title, description):
+def create_ticket(list_id, token, title, description, tags=None):
+    payload = {"name": title, "description": description}
+    if tags:
+        payload["tags"] = tags
     resp = requests.post(
         f"{API_BASE}/list/{list_id}/task",
         headers=_headers(token),
-        json={"name": title, "description": description},
+        json=payload,
         timeout=30,
     )
     resp.raise_for_status()
@@ -81,5 +84,6 @@ def file_ticket_for_run(list_id, token, failures, run_url):
         comment_ticket(token, existing, f"New failure on {run_url}\n\n{body}")
         return existing
 
-    title = f"ARIA: {len(failures)} generated test(s) failing"
-    return create_ticket(list_id, token, title, body)
+    # Failed generated tests are filed as bugs, so they land in bug triage.
+    title = f"ARIA Bug: {len(failures)} generated test(s) failing"
+    return create_ticket(list_id, token, title, body, tags=["bug"])

@@ -21,14 +21,26 @@ def test_trigger_info_deployment_with_state_and_env(tmp_path, monkeypatch):
     assert run_ci_pipeline._trigger_info() == "deployment (failure) · env: production"
 
 
-def _write_deployment_event(tmp_path, monkeypatch, state):
+def _write_deployment_event(tmp_path, monkeypatch, state, creator=None):
     event_path = tmp_path / "event.json"
+    deployment = {"sha": "abc", "environment": "production"}
+    if creator:
+        deployment["creator"] = {"login": creator}
     event_path.write_text(json.dumps({
-        "deployment": {"sha": "abc", "environment": "production"},
+        "deployment": deployment,
         "deployment_status": {"state": state},
     }))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "deployment_status")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+
+
+def test_deployment_provider_detects_vercel_and_digitalocean():
+    vercel = {"deployment": {"creator": {"login": "vercel[bot]"}}}
+    do = {"deployment": {"creator": {"login": "digitalocean[bot]"}}}
+    other = {"deployment": {"creator": {"login": "someone"}}}
+    assert run_ci_pipeline._deployment_provider(vercel) == "Vercel"
+    assert run_ci_pipeline._deployment_provider(do) == "DigitalOcean"
+    assert run_ci_pipeline._deployment_provider(other) is None
 
 
 def test_main_successful_deployment_posts_evaluation_and_skips_tests(tmp_path, monkeypatch):
@@ -56,27 +68,47 @@ def test_main_successful_deployment_posts_evaluation_and_skips_tests(tmp_path, m
     run_tests.assert_not_called()
 
 
-def test_main_failed_deployment_still_runs_automated_tests(tmp_path, monkeypatch):
+def test_main_failed_deployment_only_notifies_discord(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
     monkeypatch.setenv("CLICKUP_ENABLED", "False")
-    monkeypatch.setenv("DISCORD_ENABLED", "False")
-    _write_deployment_event(tmp_path, monkeypatch, "failure")
+    monkeypatch.setenv("DISCORD_ENABLED", "True")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
+    _write_deployment_event(tmp_path, monkeypatch, "failure", creator="vercel[bot]")
 
-    changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
-    generated = [{"path": "x.py", "source_file": "app.py", "kind": "backend"}]
-    results = {"passed": 1, "failed": 0, "failures": []}
-
-    with patch("aria.run_ci_pipeline.diff.get_changed_files", return_value=changed), \
-         patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
+    with patch("aria.run_ci_pipeline.diff.get_changed_files") as get_changed, \
          patch("aria.run_ci_pipeline.evaluate.generate_evaluation") as gen_eval, \
-         patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated) as gen_tests, \
-         patch("aria.run_ci_pipeline.runner.run_tests", return_value=results):
+         patch("aria.run_ci_pipeline.testgen.generate_tests") as gen_tests, \
+         patch("aria.run_ci_pipeline.runner.run_tests") as run_tests, \
+         patch("aria.run_ci_pipeline.discord.post_deployment_failure") as post_failure:
+
+        exit_code = run_ci_pipeline.main()
+
+    # a failed deployment gets a notification and nothing else — no diffing,
+    # no generated tests, no evaluation
+    assert exit_code == 0
+    post_failure.assert_called_once_with(
+        "https://discord.example/webhook", run_ci_pipeline._run_url(),
+        provider="Vercel", environment="production",
+    )
+    get_changed.assert_not_called()
+    gen_tests.assert_not_called()
+    run_tests.assert_not_called()
+    gen_eval.assert_not_called()
+
+
+def test_main_failed_deployment_skips_notification_when_discord_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_WORKSPACE", ".")
+    monkeypatch.setenv("DISCORD_ENABLED", "False")
+    _write_deployment_event(tmp_path, monkeypatch, "error")
+
+    with patch("aria.run_ci_pipeline.discord.post_deployment_failure") as post_failure, \
+         patch("aria.run_ci_pipeline.testgen.generate_tests") as gen_tests:
 
         exit_code = run_ci_pipeline.main()
 
     assert exit_code == 0
-    gen_tests.assert_called_once()
-    gen_eval.assert_not_called()
+    post_failure.assert_not_called()
+    gen_tests.assert_not_called()
 
 
 def test_main_holds_run_on_llm_rate_limit_no_discord_no_clickup(monkeypatch):
@@ -134,7 +166,6 @@ def test_main_runs_full_pipeline_and_files_ticket_on_failure(monkeypatch):
          patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
          patch("aria.run_ci_pipeline.runner.run_tests", return_value=results), \
          patch("aria.run_ci_pipeline.clickup.file_ticket_for_run", return_value="999") as file_ticket, \
-         patch("aria.run_ci_pipeline.discord.post_generated_tests") as post_generated, \
          patch("aria.run_ci_pipeline.discord.post_summary") as post_summary:
 
         exit_code = run_ci_pipeline.main()
@@ -142,12 +173,12 @@ def test_main_runs_full_pipeline_and_files_ticket_on_failure(monkeypatch):
     # failures hold the merge: check fails, but reporting still ran
     assert exit_code == 1
     file_ticket.assert_called_once()
-    post_generated.assert_called_once_with(
-        "https://discord.example/webhook", generated,
-        "https://github.com/org/repo/actions/runs/42", trigger=None,
+    post_summary.assert_called_once_with(
+        "https://discord.example/webhook", 1, 0, 1,
+        "https://github.com/org/repo/actions/runs/42",
+        failed_tests=[{"test": "x::test_fail", "output": "boom", "summary": None}],
+        ticket_url="https://app.clickup.com/t/999", trigger=None,
     )
-    post_summary.assert_called_once()
-    assert post_summary.call_args[0][4] == "https://app.clickup.com/t/999"
 
 
 def test_main_attaches_test_summary_to_clickup_failures(monkeypatch):

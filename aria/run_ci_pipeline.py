@@ -15,19 +15,53 @@ def _run_url():
     )
 
 
+def _load_deployment_event():
+    """Parsed deployment_status event payload, or None when this run wasn't
+    triggered by a deployment (or the payload is unreadable)."""
+    if os.environ.get("GITHUB_EVENT_NAME") != "deployment_status":
+        return None
+    try:
+        with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+            return json.load(f)
+    except (KeyError, OSError, ValueError):
+        return None
+
+
+def _deployment_provider(event):
+    """Name the platform that created the deployment. Vercel and DigitalOcean
+    both report deploys to GitHub via the Deployments API; their bot account or
+    environment/description identifies them."""
+    deployment = event.get("deployment", {})
+    haystack = " ".join(
+        str(v).lower()
+        for v in (
+            deployment.get("creator", {}).get("login"),
+            deployment.get("environment"),
+            deployment.get("description"),
+        )
+        if v
+    )
+    if "vercel" in haystack:
+        return "Vercel"
+    if "digitalocean" in haystack or "digital-ocean" in haystack:
+        return "DigitalOcean"
+    return None
+
+
 def _trigger_info():
     """Human-readable description of what triggered this run, for the Discord
     summary — e.g. "push", "pull_request", or "deployment (failure) · env: prod"."""
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     if event_name == "deployment_status":
-        try:
-            with open(os.environ["GITHUB_EVENT_PATH"]) as f:
-                event = json.load(f)
-        except (KeyError, OSError, ValueError):
+        event = _load_deployment_event()
+        if event is None:
             return "deployment"
         state = event.get("deployment_status", {}).get("state", "unknown")
-        env = event.get("deployment", {}).get("environment")
         label = f"deployment ({state})"
+        provider = _deployment_provider(event)
+        if provider:
+            label += f" · {provider}"
+        env = event.get("deployment", {}).get("environment")
         if env:
             label += f" · env: {env}"
         return label
@@ -48,15 +82,18 @@ def _attach_summaries(failures, generated):
     ]
 
 
-def _is_successful_deployment():
-    if os.environ.get("GITHUB_EVENT_NAME") != "deployment_status":
-        return False
-    try:
-        with open(os.environ["GITHUB_EVENT_PATH"]) as f:
-            event = json.load(f)
-    except (KeyError, OSError, ValueError):
-        return False
-    return event.get("deployment_status", {}).get("state") == "success"
+def _handle_failed_deployment(event, run_url):
+    """Failed/errored deployment: drop a simple Discord notification and stop —
+    no test generation, no test run, no tickets."""
+    provider = _deployment_provider(event)
+    env = event.get("deployment", {}).get("environment")
+    print(f"aria: deployment failed ({provider or 'unknown provider'}) — notifying only")
+    if os.environ.get("DISCORD_ENABLED", "False") == "True":
+        discord.post_deployment_failure(
+            os.environ.get("DISCORD_WEBHOOK_URL"),
+            run_url, provider=provider, environment=env,
+        )
+    return 0
 
 
 def _run_evaluation(changed, ctx, run_url):
@@ -79,6 +116,13 @@ def _run_evaluation(changed, ctx, run_url):
 
 def main():
     repo_dir = os.environ.get("GITHUB_WORKSPACE", ".")
+    run_url = _run_url()
+
+    deployment_event = _load_deployment_event()
+    if deployment_event is not None:
+        state = deployment_event.get("deployment_status", {}).get("state")
+        if state != "success":
+            return _handle_failed_deployment(deployment_event, run_url)
 
     changed = diff.get_changed_files(repo_dir=repo_dir)
     if not changed:
@@ -86,9 +130,8 @@ def main():
         return 0
 
     ctx = context.build_context(changed, repo_dir=repo_dir)
-    run_url = _run_url()
 
-    if _is_successful_deployment():
+    if deployment_event is not None:
         return _run_evaluation(changed, ctx, run_url)
 
     try:
@@ -104,28 +147,22 @@ def main():
         print("aria: no tests generated")
         return 0
 
-    if os.environ.get("DISCORD_ENABLED", "False") == "True":
-        discord.post_generated_tests(
-            os.environ.get("DISCORD_WEBHOOK_URL"),
-            generated, run_url, trigger=_trigger_info(),
-        )
-
     results = runner.run_tests(OUTPUT_DIR)
+    failures = _attach_summaries(results["failures"], generated)
 
     ticket_url = None
     if results["failed"] > 0 and os.environ.get("CLICKUP_ENABLED", "False") == "True":
         list_id = os.environ.get("CLICKUP_LIST_ID")
         token = os.environ.get("CLICKUP_API_TOKEN")
         if list_id and token:
-            failures = _attach_summaries(results["failures"], generated)
             task_id = clickup.file_ticket_for_run(list_id, token, failures, run_url)
             ticket_url = f"https://app.clickup.com/t/{task_id}"
 
     if os.environ.get("DISCORD_ENABLED", "False") == "True":
         discord.post_summary(
             os.environ.get("DISCORD_WEBHOOK_URL"),
-            results["passed"], results["failed"], run_url, ticket_url,
-            trigger=_trigger_info(),
+            len(generated), results["passed"], results["failed"], run_url,
+            failed_tests=failures, ticket_url=ticket_url, trigger=_trigger_info(),
         )
 
     print(f"aria: passed={results['passed']} failed={results['failed']}")
