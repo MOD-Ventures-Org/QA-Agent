@@ -1,3 +1,4 @@
+# Copy this file into any repo as .github/workflows/aria-qa.yml
 name: ARIA QA
 
 on:
