@@ -1,9 +1,9 @@
 # ARIA QA Agent
 
-Drops into any GitHub repo and, on every push/PR (and after a deployment):
-diffs the change, generates tests via an LLM, runs them, and reports failures.
-On failure it **fails the check and pings Discord**, so a required status check
-holds the merge until the failures are resolved.
+Drops into any GitHub repo and, on every push/PR (and after a successful
+deployment): diffs the change, generates tests via an LLM, runs them, and
+reports failures. On failure it **fails the check and pings Discord**, so a
+required status check holds the merge until the failures are resolved.
 
 > To actually block merges, mark the `aria-qa` check as **required** in the
 > repo's branch protection rule for `main`/`master`. Without that, ARIA still
@@ -14,15 +14,12 @@ holds the merge until the failures are resolved.
 Vercel and DigitalOcean report deploy results to the GitHub repo via
 `deployment_status` events, which ARIA listens for:
 
-- **Successful deployment**: ARIA switches modes — instead of generating and
-  running automated tests, it asks the LLM for **manual test cases**
-  (human-executable steps + expected results) covering the deployed change,
-  and posts them to Discord.
+- **Successful deployment**: ARIA generates and runs tests for the deployed
+  change — the same automated flow as pushes/PRs — so the tests exercise the
+  freshly deployed environment.
 - **Failed deployment**: ARIA only drops a simple Discord notification that
   the deployment failed (naming the provider and environment when it can
   detect them) and does nothing else — no tests, no tickets.
-
-Pushes and PRs keep the automated-test behavior above.
 
 ## Setup
 

@@ -99,36 +99,27 @@ def test_post_deployment_failure_noop_without_webhook_url():
     post.assert_not_called()
 
 
-def test_post_evaluation_sends_header_then_report():
+def test_post_summary_chunks_long_reports_under_limit():
+    failed_tests = [{
+        "test": f"x::test_case_{i}",
+        "output": "boom",
+        "summary": {
+            "test_name": f"test_case_{i}",
+            "source_file": "app.py",
+            "purpose": "p" * 200,
+            "steps": ["s" * 100],
+            "assertions": ["a" * 100],
+        },
+    } for i in range(50)]
+
     with patch("aria.discord.requests.post", return_value=Mock()) as post:
-        discord.post_evaluation(
-            "https://discord.example/webhook",
-            "## Manual Test Cases\n1. do x",
-            "https://ci/run/1",
-            trigger="deployment (success) · env: production",
+        discord.post_summary(
+            "https://discord.example/webhook", 50, 0, 50, "https://ci/run/1",
+            failed_tests=failed_tests,
         )
 
-    contents = [call.kwargs["json"]["content"] for call in post.call_args_list]
-    assert "ARIA Manual Test Cases" in contents[0]
-    assert "deployment (success)" in contents[0]
-    assert any("Manual Test Cases" in c for c in contents[1:])
-
-
-def test_post_evaluation_chunks_long_reports_under_limit():
-    long_report = "\n".join(f"line {i} " + "x" * 100 for i in range(200))
-    with patch("aria.discord.requests.post", return_value=Mock()) as post:
-        discord.post_evaluation("https://discord.example/webhook", long_report, "https://ci/run/1")
-
-    # header + at least two report chunks, each within the Discord limit
-    assert post.call_count >= 3
+    assert post.call_count >= 2
     for call in post.call_args_list:
         assert len(call.kwargs["json"]["content"]) <= discord.CONTENT_LIMIT
-
-
-def test_post_evaluation_noop_without_webhook_url():
-    with patch("aria.discord.requests.post") as post:
-        discord.post_evaluation(None, "report", "https://ci/run/1")
-
-    post.assert_not_called()
 
 

@@ -90,19 +90,3 @@ def post_deployment_failure(webhook_url, run_url, provider=None, environment=Non
     lines.append(f"CI run: {run_url}")
 
     _send(webhook_url, "\n".join(lines))
-
-
-def post_evaluation(webhook_url, report, run_url, trigger=None):
-    """Post manual test cases (Markdown) after a successful deployment. The
-    report is chunked to respect Discord's limit."""
-    if not webhook_url:
-        return
-
-    header = ["📋 **ARIA Manual Test Cases** — successful deployment"]
-    if trigger:
-        header.append(f"triggered by: {trigger}")
-    header.append(f"CI run: {run_url}")
-    _send(webhook_url, "\n".join(header))
-
-    for chunk in _chunks(report, CONTENT_LIMIT):
-        _send(webhook_url, chunk)

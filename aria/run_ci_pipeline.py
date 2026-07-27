@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from aria import clickup, context, diff, discord, evaluate, llm, runner, testgen
+from aria import clickup, context, diff, discord, llm, runner, testgen
 
 OUTPUT_DIR = "testing/suites/generated"
 
@@ -96,28 +96,13 @@ def _handle_failed_deployment(event, run_url):
     return 0
 
 
-def _run_evaluation(changed, ctx, run_url):
-    """Successful-deployment path: produce manual test cases and send them to
-    Discord instead of running automated tests."""
-    try:
-        report = evaluate.generate_evaluation(changed, ctx)
-    except llm.LLMError as e:
-        print(f"aria: could not generate manual test cases: {e}")
-        return 0
-
-    print("aria: manual test cases\n" + report)
-    if os.environ.get("DISCORD_ENABLED", "False") == "True":
-        discord.post_evaluation(
-            os.environ.get("DISCORD_WEBHOOK_URL"),
-            report, run_url, trigger=_trigger_info(),
-        )
-    return 0
-
-
 def main():
     repo_dir = os.environ.get("GITHUB_WORKSPACE", ".")
     run_url = _run_url()
 
+    # A failed deployment gets a notification and nothing else; a successful
+    # one runs the same generate-and-run flow as pushes/PRs, exercising the
+    # freshly deployed environment.
     deployment_event = _load_deployment_event()
     if deployment_event is not None:
         state = deployment_event.get("deployment_status", {}).get("state")
@@ -130,9 +115,6 @@ def main():
         return 0
 
     ctx = context.build_context(changed, repo_dir=repo_dir)
-
-    if deployment_event is not None:
-        return _run_evaluation(changed, ctx, run_url)
 
     try:
         generated = testgen.generate_tests(changed, ctx, OUTPUT_DIR)
