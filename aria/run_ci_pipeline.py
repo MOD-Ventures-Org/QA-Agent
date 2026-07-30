@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from aria import clickup, context, diff, discord, llm, runner, testgen
+from aria import context, diff, discord, llm, runner, testgen
 
 OUTPUT_DIR = "testing/suites/generated"
 
@@ -70,7 +70,7 @@ def _trigger_info():
 
 def _attach_summaries(failures, generated):
     """Match each failure to the human-readable summary generated alongside its
-    test (by test function name), so ClickUp tickets read in plain English."""
+    test (by test function name), so the Discord report reads in plain English."""
     summaries_by_name = {
         g["summary"]["test_name"]: g["summary"]
         for g in generated
@@ -84,7 +84,7 @@ def _attach_summaries(failures, generated):
 
 def _handle_failed_deployment(event, run_url):
     """Failed/errored deployment: drop a simple Discord notification and stop —
-    no test generation, no test run, no tickets."""
+    no test generation, no test run."""
     provider = _deployment_provider(event)
     env = event.get("deployment", {}).get("environment")
     print(f"aria: deployment failed ({provider or 'unknown provider'}) — notifying only")
@@ -120,8 +120,8 @@ def main():
         generated = testgen.generate_tests(changed, ctx, OUTPUT_DIR)
     except llm.LLMRateLimitError as e:
         # Gemini/Kimi are rate-limited or out of quota. Hold this run rather than
-        # reporting a false failure: no test run, no Discord post, no ClickUp ticket.
-        # A later trigger will retry once the provider's limit resets.
+        # reporting a false failure: no test run, no Discord post. A later
+        # trigger will retry once the provider's limit resets.
         print(f"aria: LLM API limit reached, holding this run: {e}")
         return 0
 
@@ -132,25 +132,17 @@ def main():
     results = runner.run_tests(OUTPUT_DIR)
     failures = _attach_summaries(results["failures"], generated)
 
-    ticket_url = None
-    if results["failed"] > 0 and os.environ.get("CLICKUP_ENABLED", "False") == "True":
-        list_id = os.environ.get("CLICKUP_LIST_ID")
-        token = os.environ.get("CLICKUP_API_TOKEN")
-        if list_id and token:
-            task_id = clickup.file_ticket_for_run(list_id, token, failures, run_url)
-            ticket_url = f"https://app.clickup.com/t/{task_id}"
-
     if os.environ.get("DISCORD_ENABLED", "False") == "True":
         discord.post_summary(
             os.environ.get("DISCORD_WEBHOOK_URL"),
             len(generated), results["passed"], results["failed"], run_url,
-            failed_tests=failures, ticket_url=ticket_url, trigger=_trigger_info(),
+            failed_tests=failures, trigger=_trigger_info(),
         )
 
     print(f"aria: passed={results['passed']} failed={results['failed']}")
     if results["failed"] > 0:
-        # Fail the check so a required status check holds the merge. Reporting
-        # (ClickUp + Discord) has already run above, so notifications still fire.
+        # Fail the check so a required status check holds the merge. Discord
+        # reporting has already run above, so notifications still fire.
         print("aria: tests failed — failing the check to hold the merge")
         return 1
     return 0

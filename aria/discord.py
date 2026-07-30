@@ -35,9 +35,9 @@ def _chunks(text, limit):
 
 
 def post_summary(webhook_url, created, passed, failed, run_url,
-                 failed_tests=None, ticket_url=None, trigger=None):
+                 failed_tests=None, trigger=None):
     """Post the run report: how many tests were created/run/passed/failed, and
-    the details of only the failed generated tests with the ClickUp ticket link."""
+    the details of only the failed generated tests."""
     if not webhook_url:
         return
 
@@ -53,8 +53,6 @@ def post_summary(webhook_url, created, passed, failed, run_url,
         f"passed: {passed} · failed: {failed}"
     )
     lines.append(f"CI run: {run_url}")
-    if ticket_url:
-        lines.append(f"ClickUp: {ticket_url}")
 
     for entry in failed_tests or []:
         summary = entry.get("summary") or {}

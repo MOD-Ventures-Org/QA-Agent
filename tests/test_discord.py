@@ -20,7 +20,7 @@ def test_post_summary_sends_display_name_override():
     assert post.call_args[1]["json"]["username"] == "Dev QA Agent"
 
 
-def test_post_summary_lists_only_failed_tests_with_ticket_link():
+def test_post_summary_lists_only_failed_tests():
     failed_tests = [{
         "test": "x::test_signup_creates_account",
         "output": "boom",
@@ -36,11 +36,10 @@ def test_post_summary_lists_only_failed_tests_with_ticket_link():
     with patch("aria.discord.requests.post", return_value=Mock()) as post:
         discord.post_summary(
             "https://discord.example/webhook", 5, 4, 1, "https://ci/run/1",
-            failed_tests=failed_tests, ticket_url="https://app.clickup.com/t/999",
+            failed_tests=failed_tests,
         )
 
     content = "\n".join(call.kwargs["json"]["content"] for call in post.call_args_list)
-    assert "https://app.clickup.com/t/999" in content
     assert "test_signup_creates_account" in content
     assert "Verifies signing up with a valid email creates an account." in content
     assert "Steps: Submit the signup form" in content

@@ -19,7 +19,7 @@ Vercel and DigitalOcean report deploy results to the GitHub repo via
   freshly deployed environment.
 - **Failed deployment**: ARIA only drops a simple Discord notification that
   the deployment failed (naming the provider and environment when it can
-  detect them) and does nothing else — no tests, no tickets.
+  detect them) and does nothing else — no tests.
 
 ## Setup
 
@@ -31,8 +31,6 @@ Vercel and DigitalOcean report deploy results to the GitHub repo via
    - `BASE_URL_FRONTEND`, `BASE_URL_API` (optional but recommended — the live
      frontend/API URLs generated tests run against; skip either to skip that
      test category, but tests for a category with no URL set will always fail)
-   - `CLICKUP_API_TOKEN`, `CLICKUP_LIST_ID` (optional — omit to skip ticket
-     filing entirely)
    - `DISCORD_WEBHOOK_URL` (optional — omit to skip notifications)
 3. Push or open a PR. Generated tests land as a `generated-tests` artifact
    on the run regardless of pass/fail.

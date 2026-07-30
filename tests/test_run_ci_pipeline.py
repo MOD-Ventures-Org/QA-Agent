@@ -45,7 +45,6 @@ def test_deployment_provider_detects_vercel_and_digitalocean():
 
 def test_main_successful_deployment_generates_and_runs_tests(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "False")
     monkeypatch.setenv("DISCORD_ENABLED", "True")
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
     _write_deployment_event(tmp_path, monkeypatch, "success", creator="vercel[bot]")
@@ -72,7 +71,6 @@ def test_main_successful_deployment_generates_and_runs_tests(tmp_path, monkeypat
 
 def test_main_failed_deployment_only_notifies_discord(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "False")
     monkeypatch.setenv("DISCORD_ENABLED", "True")
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
     _write_deployment_event(tmp_path, monkeypatch, "failure", creator="vercel[bot]")
@@ -111,11 +109,8 @@ def test_main_failed_deployment_skips_notification_when_discord_disabled(tmp_pat
     gen_tests.assert_not_called()
 
 
-def test_main_holds_run_on_llm_rate_limit_no_discord_no_clickup(monkeypatch):
+def test_main_holds_run_on_llm_rate_limit_no_discord(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "True")
-    monkeypatch.setenv("CLICKUP_LIST_ID", "list1")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "token")
     monkeypatch.setenv("DISCORD_ENABLED", "True")
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
 
@@ -126,16 +121,14 @@ def test_main_holds_run_on_llm_rate_limit_no_discord_no_clickup(monkeypatch):
          patch("aria.run_ci_pipeline.testgen.generate_tests",
                side_effect=llm.LLMRateLimitError("gemini/kimi limited")), \
          patch("aria.run_ci_pipeline.runner.run_tests") as run_tests, \
-         patch("aria.run_ci_pipeline.clickup.file_ticket_for_run") as file_ticket, \
          patch("aria.run_ci_pipeline.discord.post_summary") as post_summary:
 
         exit_code = run_ci_pipeline.main()
 
     # rate limiting isn't a real failure: hold the run, don't touch the merge,
-    # and don't fire any notifications or tickets — just retry next trigger.
+    # and don't fire any notifications — just retry next trigger.
     assert exit_code == 0
     run_tests.assert_not_called()
-    file_ticket.assert_not_called()
     post_summary.assert_not_called()
 
 
@@ -145,11 +138,8 @@ def test_main_returns_0_and_skips_when_no_changes(monkeypatch):
         assert run_ci_pipeline.main() == 0
 
 
-def test_main_runs_full_pipeline_and_files_ticket_on_failure(monkeypatch):
+def test_main_runs_full_pipeline_and_reports_on_failure(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "True")
-    monkeypatch.setenv("CLICKUP_LIST_ID", "list1")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "token")
     monkeypatch.setenv("DISCORD_ENABLED", "True")
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
@@ -165,28 +155,24 @@ def test_main_runs_full_pipeline_and_files_ticket_on_failure(monkeypatch):
          patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
          patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
          patch("aria.run_ci_pipeline.runner.run_tests", return_value=results), \
-         patch("aria.run_ci_pipeline.clickup.file_ticket_for_run", return_value="999") as file_ticket, \
          patch("aria.run_ci_pipeline.discord.post_summary") as post_summary:
 
         exit_code = run_ci_pipeline.main()
 
     # failures hold the merge: check fails, but reporting still ran
     assert exit_code == 1
-    file_ticket.assert_called_once()
     post_summary.assert_called_once_with(
         "https://discord.example/webhook", 1, 0, 1,
         "https://github.com/org/repo/actions/runs/42",
         failed_tests=[{"test": "x::test_fail", "output": "boom", "summary": None}],
-        ticket_url="https://app.clickup.com/t/999", trigger=None,
+        trigger=None,
     )
 
 
-def test_main_attaches_test_summary_to_clickup_failures(monkeypatch):
+def test_main_attaches_test_summary_to_failures(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "True")
-    monkeypatch.setenv("CLICKUP_LIST_ID", "list1")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "token")
-    monkeypatch.setenv("DISCORD_ENABLED", "False")
+    monkeypatch.setenv("DISCORD_ENABLED", "True")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.example/webhook")
 
     changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
     generated = [{
@@ -206,17 +192,16 @@ def test_main_attaches_test_summary_to_clickup_failures(monkeypatch):
          patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
          patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
          patch("aria.run_ci_pipeline.runner.run_tests", return_value=results), \
-         patch("aria.run_ci_pipeline.clickup.file_ticket_for_run", return_value="999") as file_ticket:
+         patch("aria.run_ci_pipeline.discord.post_summary") as post_summary:
 
         run_ci_pipeline.main()
 
-    passed_failures = file_ticket.call_args[0][2]
+    passed_failures = post_summary.call_args[1]["failed_tests"]
     assert passed_failures[0]["summary"]["purpose"] == "Checks the signup endpoint."
 
 
 def test_main_returns_1_on_test_failure_to_hold_merge(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "False")
     monkeypatch.setenv("DISCORD_ENABLED", "False")
 
     changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
@@ -232,7 +217,6 @@ def test_main_returns_1_on_test_failure_to_hold_merge(monkeypatch):
 
 def test_main_returns_0_when_all_tests_pass(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "False")
     monkeypatch.setenv("DISCORD_ENABLED", "False")
 
     changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
@@ -246,9 +230,8 @@ def test_main_returns_0_when_all_tests_pass(monkeypatch):
         assert run_ci_pipeline.main() == 0
 
 
-def test_main_skips_clickup_when_disabled(monkeypatch):
+def test_main_skips_discord_when_disabled(monkeypatch):
     monkeypatch.setenv("GITHUB_WORKSPACE", ".")
-    monkeypatch.setenv("CLICKUP_ENABLED", "False")
     monkeypatch.setenv("DISCORD_ENABLED", "False")
 
     changed = [{"path": "app.py", "patch": "+x", "status": "M"}]
@@ -259,11 +242,9 @@ def test_main_skips_clickup_when_disabled(monkeypatch):
          patch("aria.run_ci_pipeline.context.build_context", return_value={"repo": {}, "files": changed}), \
          patch("aria.run_ci_pipeline.testgen.generate_tests", return_value=generated), \
          patch("aria.run_ci_pipeline.runner.run_tests", return_value=results), \
-         patch("aria.run_ci_pipeline.clickup.file_ticket_for_run") as file_ticket, \
          patch("aria.run_ci_pipeline.discord.post_summary") as post_summary:
 
         exit_code = run_ci_pipeline.main()
 
     assert exit_code == 1
-    file_ticket.assert_not_called()
     post_summary.assert_not_called()
